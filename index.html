@@ -35,18 +35,19 @@
           <button class="btn ghost-btn" id="ghost">Ghost Protocol</button>
           <button class="btn danger" id="diagnostic">Cooling Diagnostic</button>
         </div>
-        <div class="answer" id="agent">Agent standby. Connect a trusted Joker Card to begin contextual monitoring.</div>
+        <div class="answer" id="agent" aria-live="polite">Agent standby. Connect a trusted Joker Card to begin contextual monitoring.</div>
       </article>
 
       <article class="panel radar">
         <h2>Proximity Radar / NFC</h2>
-        <div class="radar-face"><i class="blip"></i></div>
+        <div class="radar-face" id="radarFace"><i class="blip" id="blipPrimary"></i></div>
       </article>
 
       <article class="panel signals">
         <h2>Signals / Mesh Topology</h2>
         <div class="line"><span>Wi-Fi access points</span><strong id="aps">0</strong></div>
         <div class="line"><span>BLE environment</span><strong id="ble">0 devices</strong></div>
+        <div class="line"><span>NFC events (5 min)</span><strong id="nfcEvents">0</strong></div>
         <div class="line"><span>Link encryption</span><strong>AES-GCM</strong></div>
       </article>
 
@@ -54,7 +55,7 @@
         <h2>Watchdog / Active Assessment</h2>
         <div class="line"><span>Pipeline</span><strong>INPUT &rarr; TRUST &rarr; CONTEXT &rarr; ACTION</strong></div>
         <div class="line"><span>Latest alert</span><span class="severity low" id="alert">NO ACTIVE ALERTS</span></div>
-        <div class="line"><span>Storage vault</span><strong id="vault">LOCAL / ENCRYPTED (AES-256-GCM)</strong></div>
+        <div class="line"><span>Storage vault</span><strong id="vault">LOCKED / ENCRYPTED (AES-256-GCM)</strong></div>
         <div class="line"><span>Intelligence source</span><strong id="intelSource">NO MODEL LOADED</strong></div>
       </article>
 
@@ -63,13 +64,19 @@
         <div class="actions">
           <button class="btn" data-command="HID payload queued">Quick Hack</button>
           <button class="btn" data-command="GPIO feedback toggled">GPIO Feedback</button>
-          <button class="btn" data-command="Encrypted vault export prepared">Export Intel</button>
+          <button class="btn" id="exportIntel">Export Intel</button>
+          <button class="btn ghost-btn" id="clearVault">Clear Vault</button>
         </div>
       </article>
 
       <article class="panel full">
         <h2>Apps &middot; Module Launcher</h2>
         <div class="module-grid" id="moduleGrid"></div>
+      </article>
+
+      <article class="panel full" id="moduleDetail">
+        <h2 id="moduleDetailTitle">Module Detail</h2>
+        <div id="moduleDetailBody"><p class="consent-note">Select a module above to view its live controls and readouts.</p></div>
       </article>
 
       <article class="panel full" id="localModelPanel">
@@ -99,18 +106,25 @@
           <div class="toggle-row"><span>Prefer Local Model over Cloud Agent</span><input type="checkbox" id="preferLocalToggle" checked /></div>
           <div class="toggle-row"><span>Cloud Agent (OpenRouter via Supabase, optional)</span><input type="checkbox" id="cloudAgentToggle" /></div>
           <div class="toggle-row"><span>Buzzer on Watchdog alerts</span><input type="checkbox" id="buzzerToggle" checked /></div>
-          <div class="toggle-row"><span>Vault passphrase</span><input type="password" id="vaultPass" placeholder="Enter passphrase" /></div>
+          <div class="toggle-row">
+            <span>Vault passphrase</span>
+            <span style="display:flex;gap:6px;">
+              <input type="password" id="vaultPass" placeholder="Enter passphrase" />
+              <button class="btn" id="unlockVault" style="padding:6px 9px;font-size:11px;">Unlock</button>
+            </span>
+          </div>
         </div>
-        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function.</p>
+        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear.</p>
       </article>
 
       <article class="panel console">
         <h2>Console / Trusted Event Feed</h2>
-        <div class="log" id="log"></div>
+        <div class="log" id="log" aria-live="polite"></div>
         <form class="chat" id="chat">
           <input id="question" autocomplete="off" placeholder="Ask Console about the live environment&hellip;" />
           <button class="btn">Ask Agent</button>
         </form>
+        <p class="consent-note">Session store: console log + telemetry survive a page refresh in this browser tab (sessionStorage), and clear when the tab closes.</p>
       </article>
     </section>
   </main>

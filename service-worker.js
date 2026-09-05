@@ -1,4 +1,4 @@
-const CACHE_NAME = "console-cache-v1";
+const CACHE_NAME = "console-cache-v2";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -14,6 +14,8 @@ const CORE_ASSETS = [
   "./js/watchdog.js",
   "./js/storage.js",
   "./js/agent.js",
+  "./js/local-model.js",
+  "./js/module-detail.js",
   "./js/ui.js",
   "./assets/icon.svg"
 ];

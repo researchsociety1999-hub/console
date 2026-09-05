@@ -4,6 +4,18 @@ Console is a local-first, mobile-installable Progressive Web App (PWA) that acts
 
 This repository ships as a **private** source repository. Treat all deployment URLs, API keys, and Supabase project details as sensitive.
 
+## What's implemented
+
+- Full 8-panel HUD: System Intelligence, Proximity Radar/NFC, Signals/Mesh Topology, Watchdog/Active Assessment, Command Surface, Module Launcher, Module Detail, Console/Trusted Event Feed.
+- 10-module launcher (NFC, WiFi, BLE, BadUSB, GPIO, RGB, Buzzer, Storage, Console, Settings), each with a live **Module Detail** panel: rescan environment, confirmation-gated BadUSB presets, GPIO pin toggles, RGB effect selection, a Web-Audio buzzer test tone, and vault status.
+- `lost -> ghost -> manifested` state machine with a dimmed, essential-only Ghost Protocol UI.
+- Input -> Trust -> Context -> Action data firewall producing bounded `AlertData` objects.
+- Background Watchdog loop with deduplicated, severity-based alerts, an audible Web Audio buzzer (gated by a Settings toggle), and automatic encrypted vault logging when unlocked.
+- AES-256-GCM encrypted local vault (IndexedDB + PBKDF2), with Settings-panel unlock, an Export Intel button that decrypts and downloads a JSON file, and a Clear Vault action.
+- Session persistence: the console log and last-known telemetry/settings survive a page refresh via `sessionStorage` and clear when the tab closes.
+- **Local Model** tab: runs a GGUF LLM entirely in the browser via WebAssembly (wllama/llama.cpp) with zero API key, backend, or account. Curated small models plus arbitrary Hugging Face repo/file input. Once loaded, it is the default "Ask Agent" intelligence source.
+- Optional Cloud Agent (OpenRouter via a Supabase Edge Function) as a fallback; off by default, never holds a key client-side.
+
 ## Local Model (no API key required)
 
 Console includes a dedicated **Local Model** panel that runs a GGUF language model entirely inside the browser tab using [wllama](https://github.com/ngxson/wllama), a WebAssembly binding for llama.cpp:
@@ -22,7 +34,7 @@ Notes:
 
 ## Contents
 
-- `index.html` - application shell, HUD markup, and the Local Model panel
+- `index.html` - application shell, HUD markup, module launcher, and the Local Model panel
 - `manifest.webmanifest` - PWA install metadata
 - `service-worker.js` - offline caching and lifecycle
 - `css/tokens.css`, `css/app.css`, `css/states.css` - cinematic dark UI, responsive layout, and state visuals
@@ -32,10 +44,11 @@ Notes:
 - `js/joker-adapter.js` - hardware transport abstraction (simulated by default)
 - `js/watchdog.js` - background health/alert loop
 - `js/storage.js` - AES-256-GCM encrypted IndexedDB vault
+- `js/module-detail.js` - per-module live controls and readouts rendered in the Module Detail panel
 - `js/local-model.js` - in-browser GGUF model runtime (wllama/WebAssembly), no API key
 - `js/agent.js` - optional client for a server-side AI proxy (never calls OpenRouter directly)
 - `js/ui.js` - HUD rendering and console feed
-- `js/app.js` - orchestration and event wiring
+- `js/app.js` - orchestration, event wiring, session persistence, vault/buzzer integration
 - `js/config.example.js` - copy to `js/config.js` (git-ignored) for local overrides
 - `supabase/functions/console-agent/index.ts` - optional Supabase Edge Function template that proxies OpenRouter securely
 
@@ -48,6 +61,14 @@ npx serve .
 ```
 
 Then open the printed local URL in a browser and use "Add to Home Screen" (mobile) or the browser's install icon (desktop).
+
+## Using the vault
+
+1. Open Settings, type a passphrase, click **Unlock**. The passphrase derives an AES-256-GCM key via PBKDF2 (100k iterations); nothing is sent anywhere.
+2. While unlocked, Watchdog alerts and confirmed hardware actions are stored encrypted in IndexedDB.
+3. Click **Export Intel** (Command Surface) to decrypt and download a JSON file of vault records.
+4. Click **Clear Vault** to permanently delete stored records after a confirmation prompt.
+5. Losing the passphrase means losing access to previously stored records; there is no recovery path by design.
 
 ## Deploying
 
