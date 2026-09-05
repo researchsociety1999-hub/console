@@ -1,0 +1,17 @@
+/* Console design tokens */
+:root {
+  --bg: #091013;
+  --bg2: #0e171a;
+  --panel: #111d21;
+  --line: #26373c;
+  --text: #e8f4f4;
+  --muted: #8aa0a6;
+  --cyan: #3cf2ec;
+  --cyan-dim: #157f82;
+  --amber: #ffc857;
+  --red: #ff4f66;
+  --green: #68e38a;
+  --radius: 14px;
+  --font-display: "Rajdhani", sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+}

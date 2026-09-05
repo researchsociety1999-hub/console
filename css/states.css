@@ -1,0 +1,10 @@
+.ghost .panel:not(.hero), .ghost .console { opacity: 0.16; filter: grayscale(0.7); }
+.ghost .hud { gap: 5px; }
+.ghost .panel { min-height: 72px; }
+.ghost .panel > *:not(h2) { display: none; }
+.ghost .hero { grid-column: span 12; }
+
+.lost .ribbon { border-color: #6d2834; background: #211116; color: #ff9aaa; }
+.lost .hero::before { background: var(--red); }
+
+.manifested .ribbon { border-color: var(--cyan-dim); }
