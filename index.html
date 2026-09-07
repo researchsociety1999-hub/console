@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#091013" />
-  <meta name="description" content="Console — local-first telemetry intelligence dashboard with an offline in-browser AI model." />
+  <meta name="description" content="Console — autonomous, local-first telemetry intelligence dashboard for the SGP Joker Card." />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="./assets/icon.svg" />
@@ -22,9 +22,37 @@
 
     <div class="ribbon" id="ribbon">STATUS RIBBON // WAITING FOR SECURE JOKER LINK</div>
 
+    <!-- ================= DEFAULT VIEW: Console / Timeline ================= -->
+    <section class="hud" style="margin-bottom:14px;">
+      <article class="panel console">
+        <h2>Console / Trusted Event Feed &middot; Default View</h2>
+        <div class="log" id="log" aria-live="polite"></div>
+        <form class="chat" id="chat">
+          <input id="question" autocomplete="off" placeholder="Ask Console about the live environment&hellip;" />
+          <button class="btn">Ask Agent</button>
+        </form>
+        <div class="answer" id="agent" aria-live="polite">Agent standby. Connect a trusted Joker Card to begin contextual monitoring.</div>
+        <p class="consent-note">Session store: raw chronological data flow survives a page refresh in this browser tab (sessionStorage), and clears when the tab closes. This is the default landing view.</p>
+      </article>
+    </section>
+
+    <!-- ================= 8-PANEL HUD ================= -->
     <section class="hud">
+      <article class="panel radar">
+        <h2><span class="hud-index">01</span>Proximity Radar / NFC</h2>
+        <div class="radar-face" id="radarFace"><i class="blip" id="blipPrimary"></i></div>
+      </article>
+
+      <article class="panel signals">
+        <h2><span class="hud-index">02</span>Active Tracking / Signals</h2>
+        <div class="line"><span>Wi-Fi access points</span><strong id="aps">0</strong></div>
+        <div class="line"><span>BLE environment</span><strong id="ble">0 devices</strong></div>
+        <div class="line"><span>NFC events (5 min)</span><strong id="nfcEvents">0</strong></div>
+        <div class="line"><span>Link encryption</span><strong>AES-GCM</strong></div>
+      </article>
+
       <article class="panel hero">
-        <h2>System Intelligence</h2>
+        <h2><span class="hud-index">03</span>Link Gauges / System Intelligence</h2>
         <div class="metrics">
           <div class="metric"><b id="temp">--</b><span>Temperature</span></div>
           <div class="metric"><b id="devices">0</b><span>Known devices</span></div>
@@ -35,32 +63,19 @@
           <button class="btn ghost-btn" id="ghost">Ghost Protocol</button>
           <button class="btn danger" id="diagnostic">Cooling Diagnostic</button>
         </div>
-        <div class="answer" id="agent" aria-live="polite">Agent standby. Connect a trusted Joker Card to begin contextual monitoring.</div>
-      </article>
-
-      <article class="panel radar">
-        <h2>Proximity Radar / NFC</h2>
-        <div class="radar-face" id="radarFace"><i class="blip" id="blipPrimary"></i></div>
-      </article>
-
-      <article class="panel signals">
-        <h2>Signals / Mesh Topology</h2>
-        <div class="line"><span>Wi-Fi access points</span><strong id="aps">0</strong></div>
-        <div class="line"><span>BLE environment</span><strong id="ble">0 devices</strong></div>
-        <div class="line"><span>NFC events (5 min)</span><strong id="nfcEvents">0</strong></div>
-        <div class="line"><span>Link encryption</span><strong>AES-GCM</strong></div>
       </article>
 
       <article class="panel wide">
-        <h2>Watchdog / Active Assessment</h2>
+        <h2><span class="hud-index">04</span>Watchdog / Active Assessment</h2>
         <div class="line"><span>Pipeline</span><strong>INPUT &rarr; TRUST &rarr; CONTEXT &rarr; ACTION</strong></div>
         <div class="line"><span>Latest alert</span><span class="severity low" id="alert">NO ACTIVE ALERTS</span></div>
+        <div class="line"><span>Predicted state</span><strong id="predictedState">NOMINAL</strong></div>
         <div class="line"><span>Storage vault</span><strong id="vault">LOCKED / ENCRYPTED (AES-256-GCM)</strong></div>
         <div class="line"><span>Intelligence source</span><strong id="intelSource">NO MODEL LOADED</strong></div>
       </article>
 
       <article class="panel side">
-        <h2>Command Surface</h2>
+        <h2><span class="hud-index">05</span>Command Surface</h2>
         <div class="actions">
           <button class="btn" data-command="HID payload queued">Quick Hack</button>
           <button class="btn" data-command="GPIO feedback toggled">GPIO Feedback</button>
@@ -69,6 +84,41 @@
         </div>
       </article>
 
+      <article class="panel bridge">
+        <h2><span class="hud-index">06</span>Device Bridge</h2>
+        <div class="line"><span>Hardware</span><strong id="bridgeHardware">SGP Joker Card</strong></div>
+        <div class="line"><span>Transport</span><strong id="bridgeTransport">Disconnected</strong></div>
+        <div class="line"><span>Modules operational</span><strong id="bridgeModuleCount">0 / 8</strong></div>
+      </article>
+
+      <article class="panel awareness">
+        <h2><span class="hud-index">07</span>Awareness Stack</h2>
+        <div class="pipeline-row" id="pipelineRow">
+          <div class="pipeline-stage" data-stage="input"><span class="stage-dot"></span><span class="label">Input</span></div>
+          <div class="pipeline-arrow">&rarr;</div>
+          <div class="pipeline-stage" data-stage="trust"><span class="stage-dot"></span><span class="label">Trust</span></div>
+          <div class="pipeline-arrow">&rarr;</div>
+          <div class="pipeline-stage" data-stage="context"><span class="stage-dot"></span><span class="label">Context</span></div>
+          <div class="pipeline-arrow">&rarr;</div>
+          <div class="pipeline-stage" data-stage="action"><span class="stage-dot"></span><span class="label">Action</span></div>
+        </div>
+        <div class="line"><span>Trend</span><strong id="thermalTrend">stable</strong></div>
+      </article>
+
+      <article class="panel hackpipe">
+        <h2><span class="hud-index">08</span>Hack Pipeline</h2>
+        <div class="stepper" id="hackStepper">
+          <div class="step" data-step="select">Select</div>
+          <div class="step" data-step="path">Path</div>
+          <div class="step" data-step="execute">Execute</div>
+          <div class="step" data-step="feedback">Feedback</div>
+        </div>
+        <div class="action-queue" id="actionQueue"><p class="consent-note">No actions transmitted yet this session.</p></div>
+      </article>
+    </section>
+
+    <!-- ================= Module Launcher + Detail ================= -->
+    <section class="hud" style="margin-top:14px;">
       <article class="panel full">
         <h2>Apps &middot; Module Launcher</h2>
         <div class="module-grid" id="moduleGrid"></div>
@@ -115,16 +165,6 @@
           </div>
         </div>
         <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear.</p>
-      </article>
-
-      <article class="panel console">
-        <h2>Console / Trusted Event Feed</h2>
-        <div class="log" id="log" aria-live="polite"></div>
-        <form class="chat" id="chat">
-          <input id="question" autocomplete="off" placeholder="Ask Console about the live environment&hellip;" />
-          <button class="btn">Ask Agent</button>
-        </form>
-        <p class="consent-note">Session store: console log + telemetry survive a page refresh in this browser tab (sessionStorage), and clear when the tab closes.</p>
       </article>
     </section>
   </main>

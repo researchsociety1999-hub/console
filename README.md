@@ -6,67 +6,78 @@ This repository ships as a **private** source repository. Treat all deployment U
 
 ## What's implemented
 
-- Full 8-panel HUD: System Intelligence, Proximity Radar/NFC, Signals/Mesh Topology, Watchdog/Active Assessment, Command Surface, Module Launcher, Module Detail, Console/Trusted Event Feed.
-- 10-module launcher (NFC, WiFi, BLE, BadUSB, GPIO, RGB, Buzzer, Storage, Console, Settings), each with a live **Module Detail** panel: rescan environment, confirmation-gated BadUSB presets, GPIO pin toggles, RGB effect selection, a Web-Audio buzzer test tone, and vault status.
+- Explicit, numbered **8-panel HUD**: 01 Proximity Radar, 02 Active Tracking, 03 Link Gauges, 04 Watchdog/Active Assessment, 05 Command Surface, 06 Device Bridge, 07 Awareness Stack, 08 Hack Pipeline.
+- **Console/Timeline is the default landing view** — the raw chronological event feed renders immediately below the ribbon, before the HUD.
+- 10-module launcher (NFC, WiFi, BLE, BadUSB, GPIO, RGB, Buzzer, Storage, Console, Settings), each with a live **Module Detail** panel.
 - `lost -> ghost -> manifested` state machine with a dimmed, essential-only Ghost Protocol UI.
-- Input -> Trust -> Context -> Action data firewall producing bounded `AlertData` objects.
-- Background Watchdog loop with deduplicated, severity-based alerts, an audible Web Audio buzzer (gated by a Settings toggle), and automatic encrypted vault logging when unlocked.
-- AES-256-GCM encrypted local vault (IndexedDB + PBKDF2), with Settings-panel unlock, an Export Intel button that decrypts and downloads a JSON file, and a Clear Vault action.
-- Session persistence: the console log and last-known telemetry/settings survive a page refresh via `sessionStorage` and clear when the tab closes.
-- **Local Model** tab: runs a GGUF LLM entirely in the browser via WebAssembly (wllama/llama.cpp) with zero API key, backend, or account. Curated small models plus arbitrary Hugging Face repo/file input. Once loaded, it is the default "Ask Agent" intelligence source.
-- Optional Cloud Agent (OpenRouter via a Supabase Edge Function) as a fallback; off by default, never holds a key client-side.
+- **Data Firewall** (Input -> Trust -> Context -> Action) enriched by a **ContextEngine** that computes rolling trend, outlier detection, and predictive state before any alert is generated.
+- **Watchdog** running every 15 seconds across all 8 hardware modules plus BLE novelty detection, with deduplicated, severity-based, recommendation-carrying alerts.
+- **Action Logic** that reads each alert's `recommendation` field and routes it to a real adapter command (module restart, cooling diagnostic, vault logging, etc.).
+- AES-256-GCM encrypted local vault (IndexedDB + PBKDF2), with Settings-panel unlock, Export Intel, and Clear Vault.
+- Session persistence via `sessionStorage`.
+- **Local Model** tab: in-browser GGUF inference via WebAssembly (wllama/llama.cpp), zero API key.
+- Optional Cloud Agent (OpenRouter via Supabase Edge Function) as an off-by-default fallback.
+
+## Autonomous Intelligence Architecture (v2)
+
+### ContextEngine (in `js/data-firewall.js`)
+
+- **Trend analysis** — compares the first vs. second half of the last 8 thermal samples to classify `rising`, `falling`, or `stable`.
+- **Outlier detection** — flags a thermal sample as `is_outlier` when it deviates more than 2 standard deviations from the recent rolling mean.
+- **Predictive logic** — if the trend is `rising` while the band is already `elevated`/`critical`, the engine sets `predictedState = "HIGH_TEMP_STABLE"` and the firewall escalates that to a **CRITICAL** `TEMP_PREDICTED_CRITICAL` alert.
+
+### Full module coverage (10/10)
+
+- `js/telemetry.js` generates a tagged `SensorData` object (`{ source_module, value, ok, timestamp }`) for all 8 hardware modules, each with a small simulated failure chance, plus a shared `seenBle` Set for BLE novelty tracking.
+- `js/joker-adapter.js` exposes dedicated module-control functions: `setRgbMode(mode)`, `sendBuzzerTone(freq, duration)`, `setGpioPin(pin, value)`, `restartModule(name)`, and `sampleAllModules()`.
+
+### Watchdog (in `js/watchdog.js`)
+
+- Runs every **15 seconds**, checks thermal trend/threshold, iterates all 8 module samples for `MODULE_FAILURE` alerts, and checks BLE novelty for `BLE_NEW_DEVICE`. Deduplicates non-critical repeats within 30s; CRITICAL always passes through.
+
+### Action Logic (`handleRecommendation()` in `js/app.js`)
+
+| Recommendation | Action taken |
+|---|---|
+| `RESTART_MODULE:<name>` | Calls `adapter.restartModule(name)`, logs recovery outcome |
+| `RUN_COOLING_DIAGNOSTIC` | Sets RGB to `alert-sweep`, sounds the buzzer, updates the agent panel |
+| `LOG_AND_MONITOR` | Stores the alert in the encrypted vault (if unlocked) |
+| `FLAG_FOR_REVIEW` | Logs and queues the outlier for operator review |
+| `MONITOR` (default) | Logged only |
+
+### Severity-driven theme
+
+`setSeverityTheme()` rewrites `--sev-color`/`--sev-glow` on `documentElement` on every alert, cascading live color/glow changes across the ribbon, hero border, metrics, and blips.
 
 ## Local Model (no API key required)
 
-Console includes a dedicated **Local Model** panel that runs a GGUF language model entirely inside the browser tab using [wllama](https://github.com/ngxson/wllama), a WebAssembly binding for llama.cpp:
-
-- No API key, account, or backend of any kind.
-- No data leaves the device; inference runs on-device via WebAssembly.
-- Pick a curated small model (SmolLM2 135M/360M, Qwen2.5 0.5B, Llama 3.2 1B) or paste any Hugging Face GGUF repo + filename.
-- The GGUF file downloads once from Hugging Face and is cached by the browser's Cache API; later loads are instant.
-- Once loaded, it becomes the default "Ask Agent" intelligence source and answers questions using only the aggregated telemetry summary Console already builds for the dashboard.
-
-Notes:
-
-- WebAssembly works in every modern browser; no WebGPU is required. Larger models (1B+ parameters) are slower without multi-threading, which needs `Cross-Origin-Embedder-Policy`/`Cross-Origin-Opener-Policy` response headers. Plain GitHub Pages/Vercel static hosting does not set these by default, so the model runs single-threaded by default, which still works, just slower.
-- Prefer small Q4_K_M quantized models (a few hundred MB) for a smooth mobile/PWA experience.
-- The optional Cloud Agent (OpenRouter via Supabase) described below remains available as a fallback, but is not required at all if you use the Local Model tab.
+Console includes a dedicated **Local Model** panel that runs a GGUF language model entirely inside the browser tab using [wllama](https://github.com/ngxson/wllama), a WebAssembly binding for llama.cpp. No API key, account, or backend of any kind; no data leaves the device.
 
 ## Contents
 
-- `index.html` - application shell, HUD markup, module launcher, and the Local Model panel
+- `index.html` - application shell, explicit 8-panel HUD, module launcher, Local Model panel
 - `manifest.webmanifest` - PWA install metadata
-- `service-worker.js` - offline caching and lifecycle
-- `css/tokens.css`, `css/app.css`, `css/states.css` - cinematic dark UI, responsive layout, and state visuals
+- `service-worker.js` - offline caching and lifecycle (cache v3)
+- `css/tokens.css`, `css/app.css`, `css/states.css` - cinematic dark UI, severity-driven CSS variables, Ghost/Manifested state visuals
 - `js/state-machine.js` - lost/ghost/manifested lifecycle
-- `js/data-firewall.js` - Input -> Trust -> Context -> Action pipeline
-- `js/telemetry.js` - module data models (NFC, Wi-Fi, BLE, GPIO, RGB, buzzer)
-- `js/joker-adapter.js` - hardware transport abstraction (simulated by default)
-- `js/watchdog.js` - background health/alert loop
+- `js/data-firewall.js` - Input -> Trust -> Context -> Action pipeline + ContextEngine
+- `js/telemetry.js` - SensorData generation for all 8 hardware modules + shared BLE novelty (`seenBle`) tracking
+- `js/joker-adapter.js` - hardware transport abstraction with dedicated module-control functions
+- `js/watchdog.js` - 15-second background loop: thermal, per-module health, BLE novelty
 - `js/storage.js` - AES-256-GCM encrypted IndexedDB vault
-- `js/module-detail.js` - per-module live controls and readouts rendered in the Module Detail panel
+- `js/module-detail.js` - per-module live controls and readouts
 - `js/local-model.js` - in-browser GGUF model runtime (wllama/WebAssembly), no API key
 - `js/agent.js` - optional client for a server-side AI proxy (never calls OpenRouter directly)
-- `js/ui.js` - HUD rendering and console feed
-- `js/app.js` - orchestration, event wiring, session persistence, vault/buzzer integration
+- `js/ui.js` - shared DOM/log rendering helpers
+- `js/app.js` - orchestration, severity theme, recommendation routing, session persistence
 - `js/config.example.js` - copy to `js/config.js` (git-ignored) for local overrides
-- `supabase/functions/console-agent/index.ts` - optional Supabase Edge Function template that proxies OpenRouter securely
-
-## Running locally
-
-Any static file server works, for example:
-
-```bash
-npx serve .
-```
-
-Then open the printed local URL in a browser and use "Add to Home Screen" (mobile) or the browser's install icon (desktop).
+- `supabase/functions/console-agent/index.ts` - optional Supabase Edge Function template
 
 ## Using the vault
 
-1. Open Settings, type a passphrase, click **Unlock**. The passphrase derives an AES-256-GCM key via PBKDF2 (100k iterations); nothing is sent anywhere.
+1. Open Settings, type a passphrase, click **Unlock**.
 2. While unlocked, Watchdog alerts and confirmed hardware actions are stored encrypted in IndexedDB.
-3. Click **Export Intel** (Command Surface) to decrypt and download a JSON file of vault records.
+3. Click **Export Intel** to decrypt and download a JSON file of vault records.
 4. Click **Clear Vault** to permanently delete stored records after a confirmation prompt.
 5. Losing the passphrase means losing access to previously stored records; there is no recovery path by design.
 
@@ -74,34 +85,19 @@ Then open the printed local URL in a browser and use "Add to Home Screen" (mobil
 
 ### GitHub Pages
 
-1. Settings -> Pages -> Deploy from branch -> `main` / root.
-2. Note that GitHub Pages serves static files only. If your account/plan does not support Pages on private repositories, use Vercel instead, or make the repo public knowing there are no secrets in it.
+Settings -> Pages -> Deploy from branch -> `main` / root. Static hosting only; no secrets are included.
 
 ### Vercel
 
-Import this repository as a static project (no build step required); root directory is the repo root. The Local Model feature works out of the box on Vercel since it requires no server code.
+Import this repository as a static project (no build step required).
 
 ## Optional Cloud AI Agent (OpenRouter via Supabase)
 
-This is entirely optional; the Local Model tab is the default, key-free path. If you still want an optional cloud fallback:
-
-The PWA never holds an OpenRouter API key. The Settings panel's Cloud Agent toggle is **off by default**. When enabled by the user, `js/agent.js` sends only an aggregated, redacted telemetry summary plus the user's question to a Supabase Edge Function, which holds `OPENROUTER_API_KEY` as a server secret and forwards a minimal, allow-listed request to OpenRouter.
-
-Setup:
-
-```bash
-supabase functions deploy console-agent
-supabase secrets set OPENROUTER_API_KEY="sk-or-v1-REPLACE"
-supabase secrets set OPENROUTER_MODEL="provider/model-name"
-supabase secrets set ALLOWED_ORIGIN="https://your-deployment-url"
-```
-
-Then set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `AGENT_FUNCTION_URL` in `js/config.js` (copied from `js/config.example.js`, which is git-ignored).
+Entirely optional. The PWA never holds an OpenRouter API key; the Cloud Agent toggle is off by default and, when enabled, only talks to your own Supabase Edge Function, which holds `OPENROUTER_API_KEY` as a server secret.
 
 ## Security notes
 
 - No API keys, tokens, or secrets are stored in this repository.
-- BadUSB/HID, GPIO, and RGB actions are simulated by default and require explicit user confirmation in the UI; the Joker adapter is the single extension point for real hardware transport.
-- The local vault encrypts stored telemetry/history with AES-256-GCM, keyed by a passphrase-derived PBKDF2 key (100k iterations). Losing the passphrase means losing access to that data.
-- The Local Model feature loads third-party WebAssembly and model files from esm.sh (wllama) and Hugging Face over HTTPS on first use; verify you trust those origins for your deployment environment.
+- BadUSB/HID, GPIO, and RGB actions are simulated by default and require explicit user confirmation in the UI.
+- The local vault encrypts stored telemetry/history with AES-256-GCM, keyed by a passphrase-derived PBKDF2 key. Losing the passphrase means losing access to that data.
 - Treat this app as a monitoring/diagnostic console for authorized use on hardware and networks you own or have explicit permission to test.

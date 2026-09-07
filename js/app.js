@@ -6,11 +6,12 @@ import { buildMinimalAgentContext, askAgent } from "./agent.js";
 import { appendLog, escapeHtml, renderModuleGrid } from "./ui.js";
 import { LocalModelRuntime, CURATED_MODELS } from "./local-model.js";
 import { renderModuleDetailHtml } from "./module-detail.js";
+import { HARDWARE_MODULES } from "./telemetry.js";
 
 const root = document.getElementById("app");
 const logEl = document.getElementById("log");
 
-const SESSION_KEY = "console-session-v1";
+const SESSION_KEY = "console-session-v2";
 const savedSession = safeParseJSON(sessionStorage.getItem(SESSION_KEY)) || {};
 const history = Array.isArray(savedSession.history) ? savedSession.history : [];
 
@@ -21,7 +22,7 @@ function safeParseJSON(raw) {
 function persistSession() {
   try {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({
-      history: history.slice(0, 100),
+      history: history.slice(0, 150),
       state: {
         thermal: state.thermal,
         aps: state.aps,
@@ -43,7 +44,10 @@ const state = {
   nfcEvents: savedSession.state?.nfcEvents ?? 0,
   recentAlerts: savedSession.state?.recentAlerts ?? [],
   cloudAgentEnabled: savedSession.state?.cloudAgentEnabled ?? false,
-  preferLocal: savedSession.state?.preferLocal ?? true
+  preferLocal: savedSession.state?.preferLocal ?? true,
+  lastModuleSamples: [],
+  predictedState: "NOMINAL",
+  thermalTrend: "stable"
 };
 
 const config = window.CONSOLE_CONFIG || {};
@@ -52,6 +56,7 @@ const vault = new Vault();
 const sm = new ConsoleStateMachine(render);
 const localModel = new LocalModelRuntime();
 let activeModule = null;
+const actionQueue = [];
 
 const MODULES = [
   { id: "nfc", name: "NFC / RFID", description: "PN532 \u00b7 13.56 MHz \u00b7 read/write" },
@@ -66,6 +71,13 @@ const MODULES = [
   { id: "settings", name: "Settings", description: "AP config \u00b7 power \u00b7 system" }
 ];
 
+const SEV_THEME = {
+  low:      { color: "#3cf2ec", glow: "rgba(60,242,236,.28)" },
+  medium:   { color: "#ffc857", glow: "rgba(255,200,87,.30)" },
+  high:     { color: "#ff9a5a", glow: "rgba(255,154,90,.32)" },
+  critical: { color: "#ff4f66", glow: "rgba(255,79,102,.38)" }
+};
+
 function log(msg, level = "INFO") {
   appendLog(logEl, history, msg, level);
   persistSession();
@@ -73,7 +85,7 @@ function log(msg, level = "INFO") {
 
 if (history.length) {
   logEl.innerHTML = history
-    .slice(0, 100)
+    .slice(0, 150)
     .map((x) => `<div><time>${x.t}</time>[${x.level}] ${escapeHtml(x.msg)}</div>`)
     .join("");
 }
@@ -90,6 +102,26 @@ function playBeep(freq = 880, durationMs = 160) {
     osc.start();
     setTimeout(() => { osc.stop(); ctx.close(); }, durationMs);
   } catch { /* Web Audio unavailable */ }
+}
+
+// --- Severity theme: rewrites CSS variables consumed across every panel ---
+function setSeverityTheme(severity) {
+  const theme = SEV_THEME[severity] || SEV_THEME.low;
+  document.documentElement.style.setProperty("--sev-color", theme.color);
+  document.documentElement.style.setProperty("--sev-glow", theme.glow);
+}
+
+// --- Awareness Stack: visually pulses the 4 firewall stages on each tick ---
+function pulsePipeline() {
+  const stages = ["input", "trust", "context", "action"];
+  stages.forEach((stageName, i) => {
+    const el = document.querySelector(`.pipeline-stage[data-stage="${stageName}"]`);
+    if (!el) return;
+    setTimeout(() => {
+      el.classList.add("active");
+      setTimeout(() => el.classList.remove("active"), 700);
+    }, i * 180);
+  });
 }
 
 function render() {
@@ -112,6 +144,8 @@ function render() {
   document.getElementById("aps").textContent = String(state.aps);
   document.getElementById("ble").textContent = `${state.ble} devices`;
   document.getElementById("nfcEvents").textContent = String(state.nfcEvents);
+  document.getElementById("predictedState").textContent = state.predictedState;
+  document.getElementById("thermalTrend").textContent = state.thermalTrend;
 
   const vaultLine = document.getElementById("vault");
   if (vaultLine) vaultLine.textContent = vault.isUnlocked ? "UNLOCKED / ENCRYPTED (AES-256-GCM)" : "LOCKED / ENCRYPTED (AES-256-GCM)";
@@ -132,6 +166,11 @@ function render() {
     const activity = state.aps + state.ble + state.nfcEvents;
     blip.style.opacity = sm.state === STATES.LOST ? "0.15" : activity > 12 ? "1" : "0.6";
   }
+
+  // --- Device Bridge (panel 06) ---
+  document.getElementById("bridgeTransport").textContent = adapter.connected ? `Connected (${adapter.transport})` : "Disconnected";
+  const okCount = state.lastModuleSamples.filter((s) => s.ok).length;
+  document.getElementById("bridgeModuleCount").textContent = `${okCount} / ${HARDWARE_MODULES.length}`;
 
   if (activeModule) renderActiveModuleDetail();
   persistSession();
@@ -165,13 +204,7 @@ function wireModuleDetailActions(container) {
       } else if (action === "hack") {
         const label = el.dataset.label;
         if (!confirm(`Confirm action: ${label}?`)) return;
-        try {
-          const result = await adapter.runQuickHack(label);
-          log(`${label} \u2014 ${result.status}`, "ACTION");
-          if (vault.isUnlocked) await vault.store({ type: "ACTION", label, at: result.executedAt });
-        } catch (err) {
-          log(String(err.message || err), "ERROR");
-        }
+        await runHackPipeline(label);
       } else if (action === "gpio") {
         const pin = Number(el.dataset.pin);
         try {
@@ -186,13 +219,14 @@ function wireModuleDetailActions(container) {
       } else if (action === "rgb") {
         const effect = el.dataset.effect;
         try {
-          const result = await adapter.setRgbEffect(effect);
-          log(`RGB Aura effect set to "${effect}" (${result.status})`, "ACTION");
+          const result = await adapter.setRgbMode(effect);
+          log(`RGB Aura mode set to "${effect}" (${result.status})`, "ACTION");
         } catch (err) {
           log(String(err.message || err), "ERROR");
         }
       } else if (action === "buzzer-test") {
         playBeep(880, 180);
+        try { await adapter.sendBuzzerTone(880, 180); } catch { /* adapter may be disconnected */ }
         log("Buzzer test tone played (Web Audio, no hardware required).", "ACTION");
       } else if (action === "scroll") {
         const target = document.getElementById(el.dataset.target);
@@ -200,6 +234,83 @@ function wireModuleDetailActions(container) {
       }
     });
   });
+}
+
+// --- Hack Pipeline (panel 08): Select -> Path -> Execute -> Feedback ---
+async function runHackPipeline(label) {
+  const steps = ["select", "path", "execute", "feedback"];
+  const stepper = document.getElementById("hackStepper");
+  stepper.querySelectorAll(".step").forEach((s) => s.classList.remove("done"));
+
+  for (let i = 0; i < steps.length - 1; i++) {
+    stepper.querySelector(`[data-step="${steps[i]}"]`)?.classList.add("done");
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  try {
+    const result = await adapter.runQuickHack(label);
+    stepper.querySelector('[data-step="feedback"]')?.classList.add("done");
+    log(`${label} \u2014 ${result.status}`, "ACTION");
+    if (vault.isUnlocked) await vault.store({ type: "ACTION", label, at: result.executedAt });
+    pushActionQueue(label, "feedback");
+  } catch (err) {
+    log(String(err.message || err), "ERROR");
+    pushActionQueue(label, "failed");
+  }
+}
+
+function pushActionQueue(label, status) {
+  actionQueue.unshift({ label, status, at: new Date().toLocaleTimeString() });
+  const el = document.getElementById("actionQueue");
+  el.innerHTML = actionQueue.slice(0, 8)
+    .map((a) => `<div class="qi"><b>${escapeHtml(a.label)}</b> \u2014 ${a.status} <span style="float:right;color:#587278;">${a.at}</span></div>`)
+    .join("");
+}
+
+// --- Action Logic: routes AlertData.recommendation to a specific command ---
+async function handleRecommendation(alert) {
+  const rec = alert.recommendation || "MONITOR";
+
+  if (rec.startsWith("RESTART_MODULE:")) {
+    const moduleName = rec.split(":")[1];
+    log(`Watchdog recommendation: restart module "${moduleName}".`, "WATCHDOG");
+    try {
+      const result = await adapter.restartModule(moduleName);
+      log(`Module "${moduleName}" restart ${result.recovered ? "succeeded" : "did not resolve the fault"}.`, result.recovered ? "ACTION" : "WARN");
+      pushActionQueue(`Restart ${moduleName}`, result.recovered ? "recovered" : "unresolved");
+    } catch (err) {
+      log(String(err.message || err), "ERROR");
+    }
+    return;
+  }
+
+  if (rec === "RUN_COOLING_DIAGNOSTIC") {
+    log("Watchdog recommendation: run cooling diagnostic.", "WATCHDOG");
+    document.getElementById("agent").textContent =
+      "Predicted sustained high temperature. Cooling Diagnostic recommended \u2014 verify airflow and reduce nearby RF/compute load.";
+    try {
+      await adapter.setRgbMode("alert-sweep");
+      await adapter.sendBuzzerTone(1200, 220);
+    } catch { /* adapter may be disconnected */ }
+    pushActionQueue("Cooling Diagnostic", "triggered");
+    return;
+  }
+
+  if (rec === "LOG_AND_MONITOR") {
+    log("Watchdog recommendation: log and monitor new BLE device.", "WATCHDOG");
+    if (vault.isUnlocked) await vault.store(alert);
+    pushActionQueue("Log new BLE device", "logged");
+    return;
+  }
+
+  if (rec === "FLAG_FOR_REVIEW") {
+    log("Watchdog recommendation: flag outlier reading for review.", "WATCHDOG");
+    pushActionQueue("Flag outlier", "flagged");
+    return;
+  }
+
+  // Default MONITOR path: no action beyond logging.
+  pushActionQueue(alert.type, "monitored");
 }
 
 async function manifest() {
@@ -232,23 +343,18 @@ document.getElementById("stateBtn").addEventListener("click", () => {
   log("Secure link intentionally severed.", "WARN");
 });
 
-document.getElementById("diagnostic").addEventListener("click", () => {
+document.getElementById("diagnostic").addEventListener("click", async () => {
   log("Cooling diagnostic initiated (simulated command).", "ACTION");
   document.getElementById("agent").textContent =
     "Cooling Diagnostic queued. Verify physical thermal controls and power conditions are safe before executing hardware commands.";
+  try { await adapter.setRgbMode("alert-sweep"); } catch { /* adapter may be disconnected */ }
 });
 
 document.querySelectorAll("[data-command]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     const label = btn.dataset.command;
     if (!confirm(`Confirm action: ${label}?`)) return;
-    try {
-      const result = await adapter.runQuickHack(label);
-      log(`${label} \u2014 ${result.status}`, "ACTION");
-      if (vault.isUnlocked) await vault.store({ type: "ACTION", label, at: result.executedAt });
-    } catch (err) {
-      log(String(err.message || err), "ERROR");
-    }
+    await runHackPipeline(label);
   });
 });
 
@@ -406,16 +512,36 @@ document.getElementById("chat").addEventListener("submit", async (e) => {
   input.value = "";
 });
 
+// --- Watchdog: 15s interval, per-module health + BLE novelty + thermal ---
 const watchdog = new Watchdog({
-  intervalMs: 10000,
+  intervalMs: 15000,
   isActive: () => sm.state === STATES.MANIFESTED,
-  getSample: () => adapter.sample(),
+  getThermalSample: () => {
+    const sample = adapter.sample();
+    if (!sample) return null;
+    state.thermal = sample.thermal;
+    state.aps = sample.wifi.accessPoints;
+    state.ble = sample.ble.devices;
+    state.nfcEvents = sample.nfc.eventsLast5Min;
+    return sample.thermal;
+  },
+  getModuleSamples: () => {
+    const samples = adapter.sampleAllModules();
+    state.lastModuleSamples = samples;
+    return samples;
+  },
   onAlert: async (alert) => {
     state.recentAlerts.unshift(alert);
-    state.recentAlerts = state.recentAlerts.slice(0, 20);
+    state.recentAlerts = state.recentAlerts.slice(0, 30);
+    state.predictedState = alert.predictedState || state.predictedState;
+    state.thermalTrend = alert.trend || state.thermalTrend;
+
     const alertEl = document.getElementById("alert");
     if (alertEl) alertEl.outerHTML = `<span class="severity ${alert.severity}" id="alert">${alert.type}</span>`;
-    log(`Watchdog: ${alert.type} (${alert.severity})`, "ALERT");
+    log(`Watchdog: ${alert.type} (${alert.severity}) \u2014 recommendation: ${alert.recommendation}`, "ALERT");
+
+    setSeverityTheme(alert.severity);
+    pulsePipeline();
 
     const buzzerOn = document.getElementById("buzzerToggle")?.checked;
     if (buzzerOn && (alert.severity === "medium" || alert.severity === "high" || alert.severity === "critical")) {
@@ -426,10 +552,11 @@ const watchdog = new Watchdog({
       try { await vault.store(alert); } catch { /* non-fatal */ }
     }
 
+    await handleRecommendation(alert);
     render();
   }
 });
 watchdog.start();
 
-log("Console initialized. Session cache restored. Local Model tab ready (no API key required).");
+log("Console initialized. Session cache restored. Watchdog running every 15s across all 8 hardware modules.");
 render();
