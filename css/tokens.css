@@ -14,4 +14,9 @@
   --radius: 14px;
   --font-display: "Rajdhani", sans-serif;
   --font-body: "Inter", system-ui, sans-serif;
+
+  /* Severity theme, rewritten live by app.js on every AlertData event.
+     Defaults to cyan (nominal) until the first alert arrives. */
+  --sev-color: var(--cyan);
+  --sev-glow: rgba(60, 242, 236, 0.28);
 }

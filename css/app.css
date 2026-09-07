@@ -20,7 +20,7 @@ button { cursor: pointer; }
   gap: 10px; padding: 7px 2px 18px;
 }
 .brand { font: 700 25px var(--font-display); letter-spacing: 0.09em; }
-.brand small { font: 600 11px var(--font-body); color: var(--cyan); letter-spacing: 0.18em; }
+.brand small { font: 600 11px var(--font-body); color: var(--sev-color); letter-spacing: 0.18em; transition: color .5s ease-out; }
 .status {
   font: 700 12px var(--font-display); letter-spacing: 0.14em;
   padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted);
@@ -28,14 +28,16 @@ button { cursor: pointer; }
 }
 .dot {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--red); margin-right: 6px; box-shadow: 0 0 10px var(--red);
+  background: var(--sev-color); margin-right: 6px; box-shadow: 0 0 10px var(--sev-glow);
+  transition: background .5s ease-out, box-shadow .5s ease-out;
 }
 
 .ribbon {
-  border: 1px solid var(--cyan-dim);
-  background: linear-gradient(90deg, rgba(60,242,236,0.15), rgba(60,242,236,0.03));
-  padding: 11px 14px; border-radius: 10px; color: var(--cyan);
+  border: 1px solid var(--sev-color);
+  background: linear-gradient(90deg, var(--sev-glow), rgba(60,242,236,.03));
+  padding: 11px 14px; border-radius: 10px; color: var(--sev-color);
   font: 600 13px var(--font-display); letter-spacing: 0.1em; margin-bottom: 14px;
+  transition: border-color .5s ease-out, color .5s ease-out, background .5s ease-out;
 }
 
 .hud { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
@@ -47,13 +49,15 @@ button { cursor: pointer; }
 }
 .panel::before {
   content: ""; position: absolute; left: 0; top: 0; height: 2px; width: 100%;
-  background: linear-gradient(90deg, var(--cyan), transparent 40%);
+  background: linear-gradient(90deg, var(--sev-color), transparent 40%);
+  transition: background .5s ease-out;
 }
 .panel h2 { font: 700 13px var(--font-display); margin: 0 0 13px; letter-spacing: 0.13em; color: var(--muted); }
+.panel h2 .hud-index { color: var(--sev-color); margin-right: 6px; }
 
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .metric { background: #0b1518; border: 1px solid #203136; padding: 10px; border-radius: 9px; }
-.metric b { font: 700 25px var(--font-display); display: block; color: var(--cyan); }
+.metric b { font: 700 25px var(--font-display); display: block; color: var(--sev-color); transition: color .5s ease-out; }
 .metric span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
@@ -76,22 +80,23 @@ button { cursor: pointer; }
   margin: auto; position: relative;
 }
 .blip {
-  width: 9px; height: 9px; background: var(--cyan); box-shadow: 0 0 13px var(--cyan);
+  width: 9px; height: 9px; background: var(--sev-color); box-shadow: 0 0 13px var(--sev-glow);
   border-radius: 50%; position: absolute; left: 64%; top: 31%; animation: pulse 1.8s infinite;
+  transition: background .5s ease-out, box-shadow .5s ease-out;
 }
 
 .line {
   display: flex; justify-content: space-between; border-bottom: 1px solid #1c2c30;
   padding: 7px 0; font: 600 12px var(--font-display); letter-spacing: 0.06em;
 }
-.line strong { color: var(--cyan); }
+.line strong { color: var(--sev-color); transition: color .5s ease-out; }
 .severity { padding: 3px 6px; border-radius: 4px; font-size: 10px; }
 .severity.low { color: var(--muted); background: #16232a; }
 .severity.medium { color: var(--amber); background: #3b3016; }
 .severity.high, .severity.critical { color: #ff9aa7; background: #3a1720; }
 
 .log {
-  height: 180px; overflow: auto; background: #081114; border: 1px solid #203136;
+  height: 220px; overflow: auto; background: #081114; border: 1px solid #203136;
   border-radius: 9px; padding: 10px; font: 12px ui-monospace, SFMono-Regular, monospace; color: #b8d0d0;
 }
 .log div { padding: 3px 0; }
@@ -103,8 +108,9 @@ button { cursor: pointer; }
   border-radius: 8px; padding: 10px;
 }
 .answer {
-  margin-top: 10px; border-left: 2px solid var(--cyan); padding: 9px 10px;
+  margin-top: 10px; border-left: 2px solid var(--sev-color); padding: 9px 10px;
   background: #0a171a; color: #c8dddd; font-size: 13px; line-height: 1.45;
+  transition: border-color .5s ease-out;
 }
 
 .consent-note { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
@@ -123,13 +129,39 @@ button { cursor: pointer; }
   background: #081114; border: 1px solid #34565b; color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12px;
 }
 
+/* --- Pipeline stage dots (Awareness Stack panel) --- */
+.pipeline-row { display: flex; align-items: center; justify-content: space-between; margin: 10px 0; }
+.pipeline-stage { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; }
+.pipeline-stage .stage-dot {
+  width: 12px; height: 12px; border-radius: 50%; background: var(--line);
+  transition: background .4s ease-out, box-shadow .4s ease-out;
+}
+.pipeline-stage.active .stage-dot { background: var(--sev-color); box-shadow: 0 0 10px var(--sev-glow); }
+.pipeline-stage span.label { font-size: 9px; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; }
+.pipeline-arrow { color: var(--line); font-size: 12px; }
+
+/* --- Hack Pipeline stepper (panel 08) --- */
+.stepper { display: flex; gap: 6px; margin: 10px 0; }
+.stepper .step {
+  flex: 1; padding: 6px 4px; text-align: center; border-radius: 6px;
+  background: #0b1518; border: 1px solid var(--line); font-size: 10px; color: var(--muted);
+  letter-spacing: .06em; text-transform: uppercase; transition: all .4s ease-out;
+}
+.stepper .step.done { background: rgba(60,242,236,.12); border-color: var(--cyan-dim); color: var(--cyan); }
+.action-queue { max-height: 140px; overflow-y: auto; margin-top: 8px; }
+.action-queue .qi { font-size: 11px; padding: 6px 0; border-bottom: 1px solid #1c2c30; color: var(--muted); }
+.action-queue .qi b { color: var(--text); }
+
 .hero { grid-column: span 5; }
 .radar { grid-column: span 3; }
 .signals { grid-column: span 4; }
 .wide { grid-column: span 8; }
 .side { grid-column: span 4; }
+.bridge { grid-column: span 4; }
+.awareness { grid-column: span 4; }
+.hackpipe { grid-column: span 4; }
 .full { grid-column: span 12; }
-.console { grid-column: span 12; min-height: 230px; }
+.console { grid-column: span 12; min-height: 260px; }
 
 @keyframes pulse { 50% { transform: scale(1.7); opacity: 0.4; } }
 
@@ -137,10 +169,10 @@ button { cursor: pointer; }
   .app { padding: 10px; }
   .topbar { padding-bottom: 11px; }
   .brand { font-size: 21px; }
-  .hero, .radar, .signals, .wide, .side, .console, .full { grid-column: span 12; }
+  .hero, .radar, .signals, .wide, .side, .bridge, .awareness, .hackpipe, .console, .full { grid-column: span 12; }
   .hud { gap: 9px; }
   .panel { min-height: 130px; }
-  .console { min-height: 210px; }
+  .console { min-height: 240px; }
   .metrics { grid-template-columns: repeat(3, 1fr); }
   .metric b { font-size: 22px; }
   .settings-grid { grid-template-columns: 1fr; }
