@@ -11,6 +11,7 @@ export class JokerAdapter {
     this.connected = false;
     this.transport = "simulated";
     this.thermal = 30;
+    this.stealthMode = false;
   }
 
   async connect() {
@@ -37,12 +38,19 @@ export class JokerAdapter {
 
   /**
    * Samples every one of the 8 hardware modules and tags each result with
-   * its source_module, for the Watchdog's per-module health checks.
-   * @returns {Array<{source_module:string, value:any, ok:boolean, timestamp:number}>}
+   * its source_module and data_quality, for the Watchdog's per-module
+   * health checks and BLE novelty check. When Stealth Mode is active,
+   * RGB/Buzzer/WiFi are reported as disabled rather than sampled.
+   * @returns {Array<{source_module:string, value:any, ok:boolean, data_quality:string, timestamp:number}>}
    */
   sampleAllModules() {
     if (!this.connected) return [];
-    return HARDWARE_MODULES.map((moduleName) => generateSensorData(moduleName));
+    return HARDWARE_MODULES.map((moduleName) => {
+      if (this.stealthMode && ["rgb", "buzzer", "wifi"].includes(moduleName)) {
+        return { source_module: moduleName, value: null, ok: true, data_quality: "OK", disabled: true, timestamp: Date.now() };
+      }
+      return generateSensorData(moduleName);
+    });
   }
 
   // ---- Confirmation-gated action surface (UI must confirm before calling) ----
@@ -57,15 +65,17 @@ export class JokerAdapter {
     return { action: "GPIO_SET", pin, value, status: "simulated", executedAt: Date.now() };
   }
 
-  /** Dedicated RGB Aura control (per module-integration mandate). */
+  /** Dedicated RGB Aura control. No-op while Stealth Mode is active. */
   async setRgbMode(mode) {
     if (!this.connected) throw new Error("Joker not connected");
+    if (this.stealthMode) return { action: "RGB_MODE", mode, status: "suppressed_by_stealth_mode", executedAt: Date.now() };
     return { action: "RGB_MODE", mode, status: "simulated", executedAt: Date.now() };
   }
 
-  /** Dedicated Buzzer control: frequency in Hz, duration in ms. */
+  /** Dedicated Buzzer control: frequency in Hz, duration in ms. No-op in Stealth Mode. */
   async sendBuzzerTone(freq = 880, duration = 180) {
     if (!this.connected) throw new Error("Joker not connected");
+    if (this.stealthMode) return { action: "BUZZER_TONE", freq, duration, status: "suppressed_by_stealth_mode", executedAt: Date.now() };
     return { action: "BUZZER_TONE", freq, duration, status: "simulated", executedAt: Date.now() };
   }
 
@@ -87,5 +97,15 @@ export class JokerAdapter {
     await new Promise((r) => setTimeout(r, 200));
     const recovered = Math.random() > 0.2;
     return { action: "MODULE_RESTART", module: moduleName, recovered, status: "simulated", executedAt: Date.now() };
+  }
+
+  /**
+   * Stealth Mode: temporarily disables LED (RGB)/Buzzer/WiFi signaling.
+   * The UI layer is responsible for forcing the state machine into Ghost
+   * when this is enabled, even while telemetry keeps flowing.
+   */
+  setStealthMode(enabled) {
+    this.stealthMode = !!enabled;
+    return { action: "STEALTH_MODE", enabled: this.stealthMode, status: "simulated", executedAt: Date.now() };
   }
 }

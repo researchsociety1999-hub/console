@@ -1,8 +1,9 @@
 // Watchdog: self-running background intelligence loop.
-// Runs every 15 seconds (per mandate). Each tick samples all 8 hardware
-// modules through the Data Firewall, checks BLE novelty against
-// telemetry.js's shared `seenBle` set, and raises deduplicated,
-// severity-based alerts -- proactively, independent of user focus.
+// Runs every 15 seconds. Each tick checks BLE novelty FIRST (proactive
+// sensing, independent of temperature), then per-module data_quality
+// health across all 8 hardware modules, then the thermal/predictive
+// trend check last -- matching the mandate that BLE novelty must be able
+// to raise a HIGH alert before the temperature ever crosses a threshold.
 
 import { runDataFirewall } from "./data-firewall.js";
 
@@ -43,31 +44,29 @@ export class Watchdog {
   _tick() {
     if (!this.isActive()) return;
 
-    // --- Thermal watch (rule: temperature + predictive trend) ---
-    const thermal = this.getThermalSample();
-    if (typeof thermal === "number") {
-      const result = runDataFirewall({ source: "thermal", value: thermal, moduleOk: true });
+    const samples = this.getModuleSamples();
+
+    // --- 1. BLE Novelty Check (proactive, runs FIRST) ---
+    const bleSample = samples.find((s) => s && s.source_module === "ble");
+    if (bleSample && bleSample.ok && bleSample.newDeviceId) {
+      const result = runDataFirewall({ source: "ble", value: bleSample.newDeviceId, dataQuality: "OK", isNew: true });
       this._emit(result.alert);
     }
 
-    // --- Per-module health watch (rule: specific module failures) ---
-    const samples = this.getModuleSamples();
+    // --- 2. Per-module health watch (data_quality DEGRADED -> MODULE_FAILURE) ---
     for (const sample of samples) {
-      if (!sample) continue;
-
-      // Module failure path.
-      if (sample.ok === false) {
-        const result = runDataFirewall({ source: sample.source_module, value: sample.value, moduleOk: false });
-        this._emit(result.alert);
-        continue;
-      }
-
-      // BLE novelty path: uses the module's own newDeviceId flag, which is
-      // itself derived from telemetry.js's shared `seenBle` Set.
-      if (sample.source_module === "ble" && sample.newDeviceId) {
-        const result = runDataFirewall({ source: "ble", value: sample.newDeviceId, moduleOk: true, isNew: true });
+      if (!sample || sample.source_module === "ble") continue;
+      if (sample.data_quality === "DEGRADED") {
+        const result = runDataFirewall({ source: sample.source_module, value: sample.value, dataQuality: "DEGRADED" });
         this._emit(result.alert);
       }
+    }
+
+    // --- 3. Thermal + predictive trend check (runs LAST) ---
+    const thermal = this.getThermalSample();
+    if (typeof thermal === "number") {
+      const result = runDataFirewall({ source: "thermal", value: thermal, dataQuality: "OK" });
+      this._emit(result.alert);
     }
   }
 }

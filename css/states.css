@@ -8,3 +8,26 @@
 .lost .hero::before { background: var(--red); }
 
 .manifested .ribbon { border-color: var(--cyan-dim); }
+
+/* --- Critical Leak overlay: full-screen red risk filter (is_critical_leak) --- */
+body.critical-leak::after {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 50;
+  background: radial-gradient(circle at 50% 0%, rgba(255,79,102,.16), rgba(255,79,102,.05) 60%, transparent 100%);
+  animation: leak-pulse 2.2s infinite ease-in-out;
+}
+@keyframes leak-pulse { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+
+/* --- Trend arrow --- */
+#trendArrow { font-size: 20px; margin-left: 6px; transition: color .5s ease-out; }
+#trendArrow.rising { color: var(--red); }
+#trendArrow.falling { color: var(--green); }
+#trendArrow.stable { color: var(--muted); }
+
+/* --- Stealth Mode ribbon indicator --- */
+body.stealth-mode .ribbon { border-color: #3a4750; }
+.stealth-toggle {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  font: 700 11px var(--font-display); letter-spacing: .08em; padding: 6px 10px; border-radius: 999px;
+}
+.stealth-toggle.active { color: var(--red); border-color: #5a2530; background: rgba(255,79,102,.08); }

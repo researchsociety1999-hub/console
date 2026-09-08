@@ -67,38 +67,39 @@ export function summarizeEnvironment(state) {
 }
 
 /**
- * Generates a single SensorData sample tagged with its originating module.
- * Each hardware module has a ~6% simulated failure chance so the Watchdog
- * has real "module failure" events to detect (per the 10/10 module mandate).
+ * Generates a single SensorData sample tagged with its originating module
+ * AND a data_quality flag ("OK" | "DEGRADED"). Each hardware module has a
+ * ~6% simulated failure chance so the Watchdog has real "module failure"
+ * events to detect (per the 10/10 module mandate).
  *
  * @param {string} sourceModule - one of HARDWARE_MODULES
- * @param {object} [context] - optional prior state (e.g. { thermal: 31.2 })
- * @returns {{source_module:string, value:any, ok:boolean, timestamp:number}}
+ * @returns {{source_module:string, value:any, ok:boolean, data_quality:string, timestamp:number}}
  */
-export function generateSensorData(sourceModule, context = {}) {
+export function generateSensorData(sourceModule) {
   const ok = Math.random() > 0.06;
+  const data_quality = ok ? "OK" : "DEGRADED";
   const timestamp = Date.now();
 
   switch (sourceModule) {
     case "wifi":
-      return { source_module: "wifi", value: ok ? simulateWifi() : null, ok, timestamp };
+      return { source_module: "wifi", value: ok ? simulateWifi() : null, ok, data_quality, timestamp };
     case "ble": {
       const ble = simulateBle();
-      return { source_module: "ble", value: ok ? ble : null, ok, timestamp, newDeviceId: ble.newDeviceId };
+      return { source_module: "ble", value: ok ? ble : null, ok, data_quality, timestamp, newDeviceId: ble.newDeviceId };
     }
     case "nfc":
-      return { source_module: "nfc", value: ok ? simulateNfc() : null, ok, timestamp };
+      return { source_module: "nfc", value: ok ? simulateNfc() : null, ok, data_quality, timestamp };
     case "gpio":
-      return { source_module: "gpio", value: ok ? simulateGpio() : null, ok, timestamp };
+      return { source_module: "gpio", value: ok ? simulateGpio() : null, ok, data_quality, timestamp };
     case "rgb":
-      return { source_module: "rgb", value: ok ? { effect: "idle-pulse" } : null, ok, timestamp };
+      return { source_module: "rgb", value: ok ? { effect: "idle-pulse" } : null, ok, data_quality, timestamp };
     case "buzzer":
-      return { source_module: "buzzer", value: ok ? { armed: true } : null, ok, timestamp };
+      return { source_module: "buzzer", value: ok ? { armed: true } : null, ok, data_quality, timestamp };
     case "storage":
-      return { source_module: "storage", value: ok ? { freeBytesApprox: 900000 + Math.floor(Math.random() * 100000) } : null, ok, timestamp };
+      return { source_module: "storage", value: ok ? { freeBytesApprox: 900000 + Math.floor(Math.random() * 100000) } : null, ok, data_quality, timestamp };
     case "badusb":
-      return { source_module: "badusb", value: ok ? { armed: true } : null, ok, timestamp };
+      return { source_module: "badusb", value: ok ? { armed: true } : null, ok, data_quality, timestamp };
     default:
-      return { source_module: sourceModule, value: null, ok: false, timestamp };
+      return { source_module: sourceModule, value: null, ok: false, data_quality: "DEGRADED", timestamp };
   }
 }

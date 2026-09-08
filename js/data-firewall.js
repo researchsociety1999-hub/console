@@ -52,13 +52,29 @@ function stddev(arr, mean) {
   return Math.sqrt(variance);
 }
 
+/**
+ * ActionSynthesizer: picks the single best recommendation from the
+ * combination of Severity + PredictedState (+ alert type for module/BLE
+ * special cases). Centralizing this keeps stageAction() declarative.
+ */
+function synthesizeAction(severity, predictedState, type, isOutlier) {
+  if (type && type.endsWith("_MODULE_FAILURE")) {
+    return `RESTART_MODULE:${type.replace("_MODULE_FAILURE", "").toLowerCase()}`;
+  }
+  if (type === "BLE_NEW_DEVICE") return "LOG_AND_MONITOR";
+  if (predictedState === "HIGH_TEMP_STABLE" && severity === SEVERITY.CRITICAL) return "RUN_COOLING_DIAGNOSTIC_IMMEDIATE";
+  if (severity === SEVERITY.HIGH) return "RUN_COOLING_DIAGNOSTIC";
+  if (isOutlier) return "FLAG_FOR_REVIEW";
+  return "MONITOR";
+}
+
 // ---- Stage 1: Input ----
 function stageInput(rawSample) {
   if (!rawSample || typeof rawSample !== "object") return null;
   return {
     source: String(rawSample.source || "unknown").slice(0, 32),
     value: rawSample.value,
-    moduleOk: rawSample.moduleOk !== false,
+    dataQuality: rawSample.dataQuality || (rawSample.moduleOk === false ? "DEGRADED" : "OK"),
     isNew: !!rawSample.isNew,
     timestamp: Date.now()
   };
@@ -103,53 +119,41 @@ function stageContext(trustedInput) {
     predictedState,
     is_outlier: isOutlier,
     is_new: !!trustedInput.isNew,
-    module_ok: trustedInput.moduleOk !== false
+    data_quality: trustedInput.dataQuality
   };
 }
 
-// ---- Stage 4: Action (AlertData generation) ----
+// ---- Stage 4: Action (AlertData generation via ActionSynthesizer) ----
 function stageAction(context) {
   if (!context) return null;
   const now = context.timestamp;
 
   // Module-level hardware failure takes priority over everything else.
-  if (context.module_ok === false) {
+  if (context.data_quality === "DEGRADED" && context.source !== "thermal") {
+    const type = `${context.source.toUpperCase()}_MODULE_FAILURE`;
     return {
-      type: `${context.source.toUpperCase()}_MODULE_FAILURE`,
+      type,
       severity: SEVERITY.HIGH,
       source: context.source,
-      recommendation: `RESTART_MODULE:${context.source}`,
-      predictedState: context.predictedState,
+      predicted_state: context.predictedState,
       band: context.band,
+      recommendation: synthesizeAction(SEVERITY.HIGH, context.predictedState, type, false),
+      is_critical_leak: false,
       ageSeconds: 0,
       createdAt: now
     };
   }
 
-  // BLE / entity novelty.
+  // BLE / entity novelty -- fires at HIGH, proactively, independent of thermal state.
   if (context.is_new) {
     return {
       type: "BLE_NEW_DEVICE",
-      severity: SEVERITY.MEDIUM,
+      severity: SEVERITY.HIGH,
       source: context.source,
-      recommendation: "LOG_AND_MONITOR",
-      predictedState: context.predictedState,
+      predicted_state: context.predictedState,
       band: context.band,
-      ageSeconds: 0,
-      createdAt: now
-    };
-  }
-
-  // Predictive escalation: rising trend already in an elevated/critical band
-  // is treated as CRITICAL even before the raw value alone would qualify.
-  if (context.predictedState === "HIGH_TEMP_STABLE") {
-    return {
-      type: "TEMP_PREDICTED_CRITICAL",
-      severity: SEVERITY.CRITICAL,
-      source: context.source,
-      recommendation: "RUN_COOLING_DIAGNOSTIC",
-      predictedState: context.predictedState,
-      band: context.band,
+      recommendation: synthesizeAction(SEVERITY.HIGH, context.predictedState, "BLE_NEW_DEVICE", false),
+      is_critical_leak: false,
       ageSeconds: 0,
       createdAt: now
     };
@@ -159,17 +163,34 @@ function stageAction(context) {
   if (context.band === "elevated") severity = SEVERITY.MEDIUM;
   if (context.band === "critical") severity = SEVERITY.HIGH;
 
+  // --- PREDICTIVE ESCALATION: rising trend forces HIGH -> CRITICAL, even if
+  //     the raw reading alone would only register as HIGH. ---
+  if (context.trend === "rising" && severity === SEVERITY.HIGH) {
+    severity = SEVERITY.CRITICAL;
+  }
+
   if (severity === SEVERITY.LOW && !context.is_outlier) {
     return null; // nothing alert-worthy this cycle
   }
 
+  const type = context.predictedState === "HIGH_TEMP_STABLE"
+    ? "TEMP_PREDICTED_CRITICAL"
+    : context.is_outlier
+    ? `${context.source.toUpperCase()}_OUTLIER`
+    : `${context.source.toUpperCase()}_EVENT`;
+
+  const isCriticalLeak = severity === SEVERITY.CRITICAL && context.predictedState === "HIGH_TEMP_STABLE";
+
   return {
-    type: context.is_outlier ? `${context.source.toUpperCase()}_OUTLIER` : `${context.source.toUpperCase()}_EVENT`,
-    severity: context.is_outlier ? SEVERITY.MEDIUM : severity,
+    type,
+    severity: context.is_outlier && severity === SEVERITY.LOW ? SEVERITY.MEDIUM : severity,
     source: context.source,
-    recommendation: severity === SEVERITY.HIGH ? "RUN_COOLING_DIAGNOSTIC" : context.is_outlier ? "FLAG_FOR_REVIEW" : "MONITOR",
-    predictedState: context.predictedState,
+    predicted_state: context.predictedState,
     band: context.band,
+    trend: context.trend,
+    is_outlier: context.is_outlier,
+    recommendation: synthesizeAction(severity, context.predictedState, type, context.is_outlier),
+    is_critical_leak: isCriticalLeak,
     ageSeconds: 0,
     createdAt: now
   };
@@ -181,7 +202,7 @@ function stageAction(context) {
  * responsible for forwarding `alert` to updateUI() -- the firewall itself
  * never touches the DOM.
  *
- * @param {{source:string, value:any, moduleOk?:boolean, isNew?:boolean}} rawSample
+ * @param {{source:string, value:any, moduleOk?:boolean, dataQuality?:string, isNew?:boolean}} rawSample
  */
 export function runDataFirewall(rawSample) {
   const input = stageInput(rawSample);
@@ -191,4 +212,4 @@ export function runDataFirewall(rawSample) {
   return { input, trusted, context, alert };
 }
 
-export { SEVERITY, ContextEngine };
+export { SEVERITY, ContextEngine, synthesizeAction };
