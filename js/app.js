@@ -30,7 +30,8 @@ function persistSession() {
         nfcEvents: state.nfcEvents,
         recentAlerts: state.recentAlerts,
         cloudAgentEnabled: state.cloudAgentEnabled,
-        preferLocal: state.preferLocal
+        preferLocal: state.preferLocal,
+        stealthMode: state.stealthMode
       }
     }));
   } catch { /* storage may be unavailable in private mode */ }
@@ -45,6 +46,7 @@ const state = {
   recentAlerts: savedSession.state?.recentAlerts ?? [],
   cloudAgentEnabled: savedSession.state?.cloudAgentEnabled ?? false,
   preferLocal: savedSession.state?.preferLocal ?? true,
+  stealthMode: savedSession.state?.stealthMode ?? false,
   lastModuleSamples: [],
   predictedState: "NOMINAL",
   thermalTrend: "stable"
@@ -76,6 +78,14 @@ const SEV_THEME = {
   medium:   { color: "#ffc857", glow: "rgba(255,200,87,.30)" },
   high:     { color: "#ff9a5a", glow: "rgba(255,154,90,.32)" },
   critical: { color: "#ff4f66", glow: "rgba(255,79,102,.38)" }
+};
+
+const RECOMMENDATION_LABELS = {
+  RUN_COOLING_DIAGNOSTIC_IMMEDIATE: "Cooling diagnostic (immediate)",
+  RUN_COOLING_DIAGNOSTIC: "Cooling diagnostic",
+  FLAG_FOR_REVIEW: "Flag for review",
+  LOG_AND_MONITOR: "Log and monitor",
+  MONITOR: "Monitor"
 };
 
 function log(msg, level = "INFO") {
@@ -124,6 +134,15 @@ function pulsePipeline() {
   });
 }
 
+function renderTrendArrow(trend) {
+  const arrow = document.getElementById("trendArrow");
+  if (!arrow) return;
+  arrow.classList.remove("rising", "falling", "stable");
+  if (trend === "rising") { arrow.textContent = "\u25B2"; arrow.classList.add("rising"); }
+  else if (trend === "falling") { arrow.textContent = "\u25BC"; arrow.classList.add("falling"); }
+  else { arrow.textContent = "\u2015"; arrow.classList.add("stable"); }
+}
+
 function render() {
   root.classList.remove("lost", "ghost", "manifested");
   root.classList.add(sm.state);
@@ -138,7 +157,8 @@ function render() {
       ? "GHOST PROTOCOL // ESSENTIAL SIGNALS ONLY"
       : "STATUS RIBBON // SENTINEL WATCHDOG ACTIVE";
 
-  document.getElementById("temp").textContent = state.thermal ? `${state.thermal.toFixed(1)}\u00B0C` : "--";
+  const tempValueEl = document.getElementById("tempValue");
+  if (tempValueEl) tempValueEl.textContent = state.thermal ? `${state.thermal.toFixed(1)}\u00B0C` : "--";
   document.getElementById("devices").textContent = String(state.ble);
   document.getElementById("trust").textContent = sm.state === STATES.LOST ? "--" : "98%";
   document.getElementById("aps").textContent = String(state.aps);
@@ -146,6 +166,7 @@ function render() {
   document.getElementById("nfcEvents").textContent = String(state.nfcEvents);
   document.getElementById("predictedState").textContent = state.predictedState;
   document.getElementById("thermalTrend").textContent = state.thermalTrend;
+  renderTrendArrow(state.thermalTrend);
 
   const vaultLine = document.getElementById("vault");
   if (vaultLine) vaultLine.textContent = vault.isUnlocked ? "UNLOCKED / ENCRYPTED (AES-256-GCM)" : "LOCKED / ENCRYPTED (AES-256-GCM)";
@@ -169,8 +190,16 @@ function render() {
 
   // --- Device Bridge (panel 06) ---
   document.getElementById("bridgeTransport").textContent = adapter.connected ? `Connected (${adapter.transport})` : "Disconnected";
-  const okCount = state.lastModuleSamples.filter((s) => s.ok).length;
+  const okCount = state.lastModuleSamples.filter((s) => s.data_quality === "OK").length;
   document.getElementById("bridgeModuleCount").textContent = `${okCount} / ${HARDWARE_MODULES.length}`;
+
+  // --- Stealth Mode UI state ---
+  document.body.classList.toggle("stealth-mode", state.stealthMode);
+  const stealthBtn = document.getElementById("stealthToggle");
+  if (stealthBtn) {
+    stealthBtn.classList.toggle("active", state.stealthMode);
+    stealthBtn.textContent = state.stealthMode ? "STEALTH: ON" : "STEALTH: OFF";
+  }
 
   if (activeModule) renderActiveModuleDetail();
   persistSession();
@@ -225,9 +254,9 @@ function wireModuleDetailActions(container) {
           log(String(err.message || err), "ERROR");
         }
       } else if (action === "buzzer-test") {
-        playBeep(880, 180);
+        if (!state.stealthMode) playBeep(880, 180);
         try { await adapter.sendBuzzerTone(880, 180); } catch { /* adapter may be disconnected */ }
-        log("Buzzer test tone played (Web Audio, no hardware required).", "ACTION");
+        log(state.stealthMode ? "Buzzer test suppressed by Stealth Mode." : "Buzzer test tone played (Web Audio, no hardware required).", "ACTION");
       } else if (action === "scroll") {
         const target = document.getElementById(el.dataset.target);
         if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -270,6 +299,7 @@ function pushActionQueue(label, status) {
 // --- Action Logic: routes AlertData.recommendation to a specific command ---
 async function handleRecommendation(alert) {
   const rec = alert.recommendation || "MONITOR";
+  const label = RECOMMENDATION_LABELS[rec] || rec;
 
   if (rec.startsWith("RESTART_MODULE:")) {
     const moduleName = rec.split(":")[1];
@@ -284,20 +314,22 @@ async function handleRecommendation(alert) {
     return;
   }
 
-  if (rec === "RUN_COOLING_DIAGNOSTIC") {
-    log("Watchdog recommendation: run cooling diagnostic.", "WATCHDOG");
+  if (rec === "RUN_COOLING_DIAGNOSTIC_IMMEDIATE" || rec === "RUN_COOLING_DIAGNOSTIC") {
+    log(`Watchdog recommendation: ${label}.`, "WATCHDOG");
     document.getElementById("agent").textContent =
-      "Predicted sustained high temperature. Cooling Diagnostic recommended \u2014 verify airflow and reduce nearby RF/compute load.";
+      rec === "RUN_COOLING_DIAGNOSTIC_IMMEDIATE"
+        ? "Predicted sustained CRITICAL temperature. Immediate cooling diagnostic required \u2014 verify airflow now."
+        : "Elevated temperature detected. Cooling Diagnostic recommended \u2014 verify airflow and reduce nearby RF/compute load.";
     try {
       await adapter.setRgbMode("alert-sweep");
-      await adapter.sendBuzzerTone(1200, 220);
+      await adapter.sendBuzzerTone(rec === "RUN_COOLING_DIAGNOSTIC_IMMEDIATE" ? 1400 : 1200, 220);
     } catch { /* adapter may be disconnected */ }
-    pushActionQueue("Cooling Diagnostic", "triggered");
+    pushActionQueue(label, "triggered");
     return;
   }
 
   if (rec === "LOG_AND_MONITOR") {
-    log("Watchdog recommendation: log and monitor new BLE device.", "WATCHDOG");
+    log("Watchdog recommendation: log and monitor new BLE device (proactive novelty sensing).", "WATCHDOG");
     if (vault.isUnlocked) await vault.store(alert);
     pushActionQueue("Log new BLE device", "logged");
     return;
@@ -341,6 +373,14 @@ document.getElementById("stateBtn").addEventListener("click", () => {
   sm.sever();
   adapter.disconnect();
   log("Secure link intentionally severed.", "WARN");
+});
+
+document.getElementById("stealthToggle").addEventListener("click", () => {
+  state.stealthMode = !state.stealthMode;
+  adapter.setStealthMode(state.stealthMode);
+  log(`Stealth Mode ${state.stealthMode ? "ENABLED \u2014 RGB/Buzzer/WiFi signaling disabled, Ghost Protocol forced" : "disabled"}.`, "SECURE");
+  if (state.stealthMode && sm.state === STATES.MANIFESTED) sm.enterGhost();
+  render();
 });
 
 document.getElementById("diagnostic").addEventListener("click", async () => {
@@ -512,7 +552,7 @@ document.getElementById("chat").addEventListener("submit", async (e) => {
   input.value = "";
 });
 
-// --- Watchdog: 15s interval, per-module health + BLE novelty + thermal ---
+// --- Watchdog: 15s interval, BLE novelty (first) + per-module health + thermal (last) ---
 const watchdog = new Watchdog({
   intervalMs: 15000,
   isActive: () => sm.state === STATES.MANIFESTED,
@@ -533,18 +573,21 @@ const watchdog = new Watchdog({
   onAlert: async (alert) => {
     state.recentAlerts.unshift(alert);
     state.recentAlerts = state.recentAlerts.slice(0, 30);
-    state.predictedState = alert.predictedState || state.predictedState;
+    state.predictedState = alert.predicted_state || state.predictedState;
     state.thermalTrend = alert.trend || state.thermalTrend;
 
     const alertEl = document.getElementById("alert");
     if (alertEl) alertEl.outerHTML = `<span class="severity ${alert.severity}" id="alert">${alert.type}</span>`;
-    log(`Watchdog: ${alert.type} (${alert.severity}) \u2014 recommendation: ${alert.recommendation}`, "ALERT");
+    log(`Watchdog: ${alert.type} (${alert.severity}) \u2014 predicted: ${alert.predicted_state} \u2014 recommendation: ${alert.recommendation}`, "ALERT");
 
     setSeverityTheme(alert.severity);
     pulsePipeline();
 
+    // --- is_critical_leak: full-screen red risk overlay ---
+    document.body.classList.toggle("critical-leak", !!alert.is_critical_leak);
+
     const buzzerOn = document.getElementById("buzzerToggle")?.checked;
-    if (buzzerOn && (alert.severity === "medium" || alert.severity === "high" || alert.severity === "critical")) {
+    if (!state.stealthMode && buzzerOn && (alert.severity === "medium" || alert.severity === "high" || alert.severity === "critical")) {
       playBeep(alert.severity === "critical" ? 1200 : alert.severity === "high" ? 1000 : 700, 220);
     }
 
@@ -558,5 +601,5 @@ const watchdog = new Watchdog({
 });
 watchdog.start();
 
-log("Console initialized. Session cache restored. Watchdog running every 15s across all 8 hardware modules.");
+log("Console initialized. Session cache restored. Watchdog running every 15s: BLE novelty first, then module health, then thermal/predictive trend.");
 render();

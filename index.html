@@ -17,7 +17,10 @@
   <main class="app lost" id="app">
     <header class="topbar">
       <div class="brand">CONSOLE <small>// COGNITIVE CORE</small></div>
-      <button class="status" id="stateBtn"><i class="dot"></i><span id="stateText">LINK LOST</span></button>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button class="stealth-toggle" id="stealthToggle">STEALTH: OFF</button>
+        <button class="status" id="stateBtn"><i class="dot"></i><span id="stateText">LINK LOST</span></button>
+      </div>
     </header>
 
     <div class="ribbon" id="ribbon">STATUS RIBBON // WAITING FOR SECURE JOKER LINK</div>
@@ -54,7 +57,7 @@
       <article class="panel hero">
         <h2><span class="hud-index">03</span>Link Gauges / System Intelligence</h2>
         <div class="metrics">
-          <div class="metric"><b id="temp">--</b><span>Temperature</span></div>
+          <div class="metric"><b id="temp"><span id="tempValue">--</span><span id="trendArrow" class="stable">&#8213;</span></b><span>Temperature</span></div>
           <div class="metric"><b id="devices">0</b><span>Known devices</span></div>
           <div class="metric"><b id="trust">--</b><span>Trust score</span></div>
         </div>
@@ -164,7 +167,7 @@
             </span>
           </div>
         </div>
-        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear.</p>
+        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear. Stealth Mode disables RGB/Buzzer/WiFi signaling and forces Ghost Protocol regardless of live data flow.</p>
       </article>
     </section>
   </main>
