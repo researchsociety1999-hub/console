@@ -75,7 +75,24 @@ function isActionApproved(action) {
  * no packet passes through — system is forced OFFLINE regardless of
  * whatever sensor readings might otherwise say.
  */
-export function runDataFirewall(rawPacket) {
+export function runDataFirewall(rawPacket, deviceContext = {}) {
+  if (deviceContext && Object.prototype.hasOwnProperty.call(deviceContext, "connected") && !deviceContext.connected) {
+    return {
+      input: rawPacket,
+      trusted: null,
+      context: { state: CARD_STATE.OFFLINE, reason: "DEVICE_NOT_CONNECTED" },
+      alert: {
+        type: "DEVICE_NOT_CONNECTED",
+        severity: "WARN",
+        source: "firewall",
+        predicted_state: "OFFLINE",
+        recommendation: "CONNECT_DEVICE_PROFILE",
+        is_critical_leak: false,
+        createdAt: Date.now()
+      }
+    };
+  }
+
   if (jokerAdapter.isDevicePoweredOff?.()) {
     return {
       input: null,

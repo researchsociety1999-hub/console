@@ -345,23 +345,81 @@ async function handleRecommendation(alert) {
   pushActionQueue(alert.type, "monitored");
 }
 
+function readConnectionProfileFromUi() {
+  const transport = document.getElementById("transportSelect")?.value || "simulated";
+  const boardType = document.getElementById("boardTypeSelect")?.value || "SGP Joker Card";
+  const deviceName = document.getElementById("deviceNameInput")?.value?.trim() || "SGP Joker Card";
+  const endpointUrl = document.getElementById("endpointUrlInput")?.value?.trim() || "";
+  const wifiSsid = document.getElementById("wifiSsidInput")?.value?.trim() || "";
+  const wifiPassword = document.getElementById("wifiPasswordInput")?.value || "";
+
+  return {
+    transport,
+    boardType,
+    deviceName,
+    endpointUrl,
+    wifiSsid,
+    wifiPassword
+  };
+}
+
+function applyConnectionProfileToUi(profile) {
+  if (!profile) return;
+  const transportSelect = document.getElementById("transportSelect");
+  const boardTypeSelect = document.getElementById("boardTypeSelect");
+  const deviceNameInput = document.getElementById("deviceNameInput");
+  const endpointUrlInput = document.getElementById("endpointUrlInput");
+  const wifiSsidInput = document.getElementById("wifiSsidInput");
+  const wifiPasswordInput = document.getElementById("wifiPasswordInput");
+
+  if (transportSelect) transportSelect.value = profile.transport || "simulated";
+  if (boardTypeSelect) boardTypeSelect.value = profile.boardType || "SGP Joker Card";
+  if (deviceNameInput) deviceNameInput.value = profile.deviceName || "";
+  if (endpointUrlInput) endpointUrlInput.value = profile.endpointUrl || "";
+  if (wifiSsidInput) wifiSsidInput.value = profile.wifiSsid || "";
+  if (wifiPasswordInput) wifiPasswordInput.value = profile.wifiPassword || "";
+}
+
 async function manifest() {
-  await adapter.connect();
-  sm.manifest();
-  const sample = adapter.sample();
-  if (sample) {
-    state.thermal = sample.thermal;
-    state.aps = sample.wifi.accessPoints;
-    state.ble = sample.ble.devices;
-    state.nfcEvents = sample.nfc.eventsLast5Min;
+  const profile = readConnectionProfileFromUi();
+  adapter.setProfile(profile);
+  adapter.setMode(profile.transport === "ble" ? "ble" : profile.transport === "wifi" ? "wifi" : profile.transport === "custom" ? "custom" : "simulated");
+
+  try {
+    const connection = await adapter.connect();
+    sm.manifest();
+    const sample = adapter.sample();
+    if (sample) {
+      state.thermal = sample.thermal;
+      state.aps = sample.wifi.accessPoints;
+      state.ble = sample.ble.devices;
+      state.nfcEvents = sample.nfc.eventsLast5Min;
+    }
+    log(`Trusted ${adapter.connectionProfile.boardType || "Joker"} session manifested via ${adapter.connectionProfile.transport}. Data Firewall enabled.`, "SECURE");
+    document.getElementById("agent").textContent =
+      `Live context established through ${adapter.connectionProfile.transport.toUpperCase()} transport. Environmental telemetry is being interpreted through the trust and context stages.`;
+    render();
+    return connection;
+  } catch (err) {
+    log(`Connection failed: ${err.message || err}`, "ERROR");
+    document.getElementById("agent").textContent = `Connection failed: ${err.message || err}`;
+    throw err;
   }
-  log("Trusted Joker session manifested. Data Firewall enabled.", "SECURE");
-  document.getElementById("agent").textContent =
-    "Live context established. Environmental telemetry is being interpreted through the trust and context stages.";
-  render();
 }
 
 document.getElementById("connect").addEventListener("click", manifest);
+
+document.getElementById("applyConnectionProfile").addEventListener("click", () => {
+  const profile = readConnectionProfileFromUi();
+  const validation = adapter.setProfile(profile) && adapter.validateConnectionProfile();
+  if (!validation?.valid) {
+    log(validation?.warnings?.[0] || "Connection profile is incomplete.", "WARN");
+    return;
+  }
+  adapter.setMode(profile.transport === "ble" ? "ble" : profile.transport === "wifi" ? "wifi" : profile.transport === "custom" ? "custom" : "simulated");
+  log(`Connection profile applied: ${profile.boardType} / ${profile.transport}.`, "SECURE");
+  render();
+});
 
 document.getElementById("ghost").addEventListener("click", () => {
   if (sm.state === STATES.LOST) return manifest();

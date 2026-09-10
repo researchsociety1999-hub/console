@@ -10,9 +10,26 @@
 // CURATED_MODELS is a small, safe default catalog for the launcher grid.
 
 let wllamaModulePromise = null;
+
+export function formatWllamaLoadError(error) {
+  const raw = error && (error.message || String(error));
+  if (!raw) {
+    return "The Local Model runtime could not initialize in this browser session. Try reloading the page or using the Cloud Agent fallback.";
+  }
+
+  if (/cdn\.jsdelivr|Failed to fetch dynamically imported module|blocked|network|fetch/i.test(raw)) {
+    return "The Local Model runtime was blocked while loading the Wllama browser package. The app now uses the locally installed library instead; if this still fails, the browser is preventing local module imports or the model download is unavailable.";
+  }
+
+  return raw;
+}
+
 function loadWllamaModule() {
   if (!wllamaModulePromise) {
-    wllamaModulePromise = import("https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/index.mjs");
+    const localEntry = new URL("../node_modules/@wllama/wllama/esm/index.js", import.meta.url).href;
+    wllamaModulePromise = import(localEntry).catch((error) => {
+      throw new Error(formatWllamaLoadError(error));
+    });
   }
   return wllamaModulePromise;
 }
@@ -61,10 +78,10 @@ export class LocalModelRuntime {
       const WllamaCtor = wllamaMod.Wllama || wllamaMod.default;
 
       const modelUrl = `https://huggingface.co/${repo}/resolve/main/${file}`;
+      const wasmBase = new URL("../node_modules/@wllama/wllama/esm/wasm/", import.meta.url).href;
 
       this.wllama = new WllamaCtor({
-        "single-thread/wllama.wasm": "https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/single-thread/wllama.wasm",
-        "multi-thread/wllama.wasm": "https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/multi-thread/wllama.wasm"
+        default: new URL("wllama.wasm", wasmBase).href
       });
 
       await this.wllama.loadModelFromUrl(modelUrl, {

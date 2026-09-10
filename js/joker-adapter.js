@@ -30,6 +30,14 @@ export class JokerAdapter {
     this.thermal = 30;
     this.stealthMode = false;
     this.isPoweredOff = false;
+    this.connectionProfile = {
+      transport: "simulated",
+      boardType: "SGP Joker Card",
+      deviceName: "SGP Joker Card",
+      endpointUrl: "",
+      wifiSsid: "",
+      wifiPassword: ""
+    };
 
     this.device = null;
     this.server = null;
@@ -49,8 +57,49 @@ export class JokerAdapter {
     return typeof navigator !== "undefined" && "bluetooth" in navigator;
   }
 
+  setProfile(profile = {}) {
+    const next = {
+      transport: profile.transport || this.connectionProfile.transport || "simulated",
+      boardType: profile.boardType || this.connectionProfile.boardType || "SGP Joker Card",
+      deviceName: profile.deviceName || this.connectionProfile.deviceName || "SGP Joker Card",
+      endpointUrl: profile.endpointUrl || "",
+      wifiSsid: profile.wifiSsid || "",
+      wifiPassword: profile.wifiPassword || ""
+    };
+
+    if (!["simulated", "ble", "wifi", "custom"].includes(next.transport)) {
+      throw new Error(`Unsupported adapter transport: ${next.transport}`);
+    }
+
+    this.connectionProfile = next;
+    this.transport = next.transport === "ble" ? "ble-gatt" : next.transport === "wifi" ? "wifi" : next.transport === "custom" ? "custom" : "simulated";
+    this.mode = next.transport === "ble" ? "ble" : next.transport === "wifi" || next.transport === "custom" ? "simulated" : "simulated";
+    return this.connectionProfile;
+  }
+
+  validateConnectionProfile() {
+    const profile = this.connectionProfile;
+    const transport = profile.transport || "simulated";
+
+    if (transport === "simulated") {
+      return { valid: true, warnings: [] };
+    }
+
+    if (transport === "ble") {
+      const valid = Boolean(profile.deviceName && profile.deviceName.trim());
+      return { valid, warnings: valid ? [] : ["Enter a device name for BLE connection."] };
+    }
+
+    if (transport === "wifi" || transport === "custom") {
+      const valid = Boolean(profile.endpointUrl && profile.endpointUrl.trim()) || Boolean(profile.wifiSsid && profile.wifiSsid.trim());
+      return { valid, warnings: valid ? [] : ["Enter either an endpoint URL or Wi‑Fi SSID for a custom board connection."] };
+    }
+
+    return { valid: false, warnings: ["Unsupported transport selected."] };
+  }
+
   setMode(mode) {
-    if (!["simulated", "ble"].includes(mode)) {
+    if (!["simulated", "ble", "wifi", "custom"].includes(mode)) {
       throw new Error(`Unsupported adapter mode: ${mode}`);
     }
     if (mode === "ble" && !this.canUseWebBluetooth) {
@@ -59,17 +108,23 @@ export class JokerAdapter {
       return false;
     }
     this.mode = mode;
-    this.transport = mode === "ble" ? "ble-gatt" : "simulated";
+    this.transport = mode === "ble" ? "ble-gatt" : mode === "wifi" ? "wifi" : mode === "custom" ? "custom" : "simulated";
+    this.connectionProfile.transport = mode;
     return true;
   }
 
   async connect() {
-    if (this.mode === "simulated") {
+    const profileValidation = this.validateConnectionProfile();
+    if (!profileValidation.valid && this.connectionProfile.transport !== "simulated") {
+      throw new Error(profileValidation.warnings[0] || "The selected connection profile is incomplete.");
+    }
+
+    if (this.mode === "simulated" || this.connectionProfile.transport === "simulated") {
       await new Promise((resolve) => setTimeout(resolve, 300));
       this.connected = true;
       this.transport = "simulated";
       this.isPoweredOff = false;
-      return { connected: true, transport: this.transport, mode: this.mode };
+      return { connected: true, transport: this.transport, mode: this.mode, profile: { ...this.connectionProfile } };
     }
 
     if (!this.canUseWebBluetooth) {

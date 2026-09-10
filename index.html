@@ -160,6 +160,39 @@
           <div class="toggle-row"><span>Cloud Agent (OpenRouter via Supabase, optional)</span><input type="checkbox" id="cloudAgentToggle" /></div>
           <div class="toggle-row"><span>Buzzer on Watchdog alerts</span><input type="checkbox" id="buzzerToggle" checked /></div>
           <div class="toggle-row">
+            <span>Transport</span>
+            <select id="transportSelect" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;">
+              <option value="simulated">Simulated</option>
+              <option value="ble">BLE / Web Bluetooth</option>
+              <option value="wifi">Wi‑Fi / Custom endpoint</option>
+              <option value="custom">Custom PCB profile</option>
+            </select>
+          </div>
+          <div class="toggle-row">
+            <span>Board type</span>
+            <select id="boardTypeSelect" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;">
+              <option value="SGP Joker Card">SGP Joker Card</option>
+              <option value="Custom PCB">Custom PCB</option>
+              <option value="Debug Board">Debug Board</option>
+            </select>
+          </div>
+          <div class="toggle-row">
+            <span>Device name</span>
+            <input id="deviceNameInput" type="text" placeholder="e.g. PCB-ALPHA" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
+          </div>
+          <div class="toggle-row">
+            <span>Endpoint URL</span>
+            <input id="endpointUrlInput" type="text" placeholder="https://device.local/api or http://192.168.1.50:9000" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
+          </div>
+          <div class="toggle-row">
+            <span>Wi‑Fi SSID</span>
+            <input id="wifiSsidInput" type="text" placeholder="JokerNet" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
+          </div>
+          <div class="toggle-row">
+            <span>Wi‑Fi password</span>
+            <input id="wifiPasswordInput" type="password" placeholder="Optional for local tests" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
+          </div>
+          <div class="toggle-row">
             <span>Vault passphrase</span>
             <span style="display:flex;gap:6px;">
               <input type="password" id="vaultPass" placeholder="Enter passphrase" />
@@ -167,7 +200,10 @@
             </span>
           </div>
         </div>
-        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear. Stealth Mode disables RGB/Buzzer/WiFi signaling and forces Ghost Protocol regardless of live data flow.</p>
+        <div class="actions" style="margin-top:12px;">
+          <button class="btn" id="applyConnectionProfile">Apply Connection Profile</button>
+        </div>
+        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear. Stealth Mode disables RGB/Buzzer/WiFi signaling and forces Ghost Protocol regardless of live data flow. Use the transport selector above to connect to a physical Joker Card, a BLE board, or a custom Wi‑Fi PCB profile.</p>
       </article>
     </section>
   </main>
