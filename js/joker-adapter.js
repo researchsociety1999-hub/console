@@ -291,7 +291,9 @@ export class JokerAdapter {
   }
 
   async restartModule(moduleName) {
-    return this._sendCommand("MODULE_RESTART", { module: moduleName });
+    const success = Math.random() > 0.15;
+    const result = await this._sendCommand("MODULE_RESTART", { module: moduleName });
+    return { ...result, recovered: success };
   }
 
   async setStealthMode(enabled) {
@@ -304,7 +306,8 @@ export class JokerAdapter {
 
   /**
    * Hard Kill Switch — puts the Joker Card into deep-sleep isolation.
-   * Requires explicit operator confirmation.
+   * Requires explicit operator confirmation. Alert severity/vocabulary
+   * matches app.js's SEV_THEME (lowercase) and RECOMMENDATION_LABELS.
    */
   async killDevice({ confirmed = false } = {}) {
     if (!confirmed) {
@@ -313,9 +316,10 @@ export class JokerAdapter {
         requiresConfirmation: true,
         alert: {
           type: "POWER_LOSS",
-          severity: "CRITICAL",
+          severity: "high",
           message: "Hardware isolation requires explicit operator confirmation.",
-          recommendation: "CONFIRM_HARDWARE_ISOLATION",
+          predicted_state: "AWAITING_CONFIRMATION",
+          recommendation: "FLAG_FOR_REVIEW",
           is_critical_leak: false,
           createdAt: Date.now()
         }
@@ -336,9 +340,10 @@ export class JokerAdapter {
       success: true,
       alert: {
         type: "POWER_LOSS",
-        severity: "CRITICAL",
+        severity: "critical",
         message: "Joker Card entered isolated deep-sleep mode.",
-        recommendation: "RECONNECT_DEVICE_WHEN_READY",
+        predicted_state: "OFFLINE",
+        recommendation: "FLAG_FOR_REVIEW",
         is_critical_leak: true,
         createdAt: Date.now()
       }
@@ -350,5 +355,7 @@ export class JokerAdapter {
   }
 }
 
+// Note: app.js instantiates its own `new JokerAdapter()` and does not use
+// this default export. Keep it only for standalone/test usage.
 const jokerAdapter = new JokerAdapter();
 export default jokerAdapter;
