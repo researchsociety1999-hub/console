@@ -1,130 +1,135 @@
-import * as wllama from "https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/index.mjs";
+// Local Model Runtime — on-device GGUF inference via wllama (WebAssembly).
+// No API key, no server, no account. The GGUF file downloads once from
+// Hugging Face and is cached by the browser; inference after that is fully
+// offline. Public API matches what app.js calls:
+//   new LocalModelRuntime()
+//   .loaded / .loadingModelName
+//   .loadFromHF(repo, file, onProgressPct)
+//   .ask(question, contextSummary)
+//   .unload()
+// CURATED_MODELS is a small, safe default catalog for the launcher grid.
 
-// ============================================================================
-// Model Catalog — centralized aliases so the UI only needs a friendly name
-// ============================================================================
-export const MODEL_CATALOG = {
-  smolLM2: {
+let wllamaModulePromise = null;
+function loadWllamaModule() {
+  if (!wllamaModulePromise) {
+    wllamaModulePromise = import("https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/index.mjs");
+  }
+  return wllamaModulePromise;
+}
+
+export const CURATED_MODELS = [
+  {
+    id: "smollm2-360m",
+    name: "SmolLM2 360M Instruct",
     repo: "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
     file: "smollm2-360m-instruct-q4_k_m.gguf",
-    label: "SmolLM2 360M (Q4_K_M)"
+    size: "~250MB",
+    note: "Fastest, lowest memory"
   },
-  qwen05: {
+  {
+    id: "qwen25-05b",
+    name: "Qwen 2.5 0.5B Instruct",
     repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    label: "Qwen 2.5 0.5B (Q4_K_M)"
+    size: "~400MB",
+    note: "Balanced quality/speed"
   },
-  phi35: {
+  {
+    id: "phi35-mini",
+    name: "Phi 3.5 Mini Instruct",
     repo: "microsoft/Phi-3.5-mini-instruct-GGUF",
     file: "phi-3.5-mini-instruct-q4_k_m.gguf",
-    label: "Phi 3.5 Mini (Q4_K_M)"
+    size: "~2.2GB",
+    note: "Highest quality, slower load"
   }
-};
+];
 
 export class LocalModelRuntime {
   constructor() {
     this.wllama = null;
-    this.model = null;
     this.loaded = false;
     this.loadingModelName = null;
   }
 
-  /**
-   * Load a model by alias ("smolLM2", "qwen05", "phi35") or explicit config.
-   * Returns a promise that resolves when the model is ready for inference.
-   */
-  async loadModel(modelNameOrConfig = "smolLM2", onProgress) {
-    const config =
-      typeof modelNameOrConfig === "string"
-        ? MODEL_CATALOG[modelNameOrConfig]
-        : modelNameOrConfig;
-
-    if (!config?.repo || !config?.file) {
-      throw new Error(
-        `Unknown model alias or invalid GGUF model configuration: ${JSON.stringify(modelNameOrConfig)}`
-      );
+  async loadFromHF(repo, file, onProgress) {
+    if (!repo || !file) {
+      throw new Error("A Hugging Face repo and GGUF filename are required.");
     }
 
-    this.loadingModelName = config.label;
-
     try {
-      this.wllama = await wllama.create();
-      this.model = await this.wllama.loadModel({
-        repo: config.repo,
-        file: config.file,
-        onProgress: (progress) => {
-          if (onProgress) onProgress(progress);
+      const wllamaMod = await loadWllamaModule();
+      const WllamaCtor = wllamaMod.Wllama || wllamaMod.default;
+
+      const modelUrl = `https://huggingface.co/${repo}/resolve/main/${file}`;
+
+      this.wllama = new WllamaCtor({
+        "single-thread/wllama.wasm": "https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/single-thread/wllama.wasm",
+        "multi-thread/wllama.wasm": "https://cdn.jsdelivr.net/npm/@wllama/wllama@latest/dist/multi-thread/wllama.wasm"
+      });
+
+      await this.wllama.loadModelFromUrl(modelUrl, {
+        progressCallback: ({ loaded, total }) => {
+          if (onProgress) {
+            const pct = total ? Math.round((loaded / total) * 100) : null;
+            onProgress(pct);
+          }
         }
       });
+
       this.loaded = true;
-      return { success: true, model: config.label };
+      this.loadingModelName = `${repo}/${file}`;
+      return { success: true, model: this.loadingModelName };
     } catch (error) {
       this.loaded = false;
       this.loadingModelName = null;
+      this.wllama = null;
       throw error;
     }
   }
 
-  /**
-   * Run a single-turn completion with the loaded model.
-   * Returns the generated text (string).
-   */
-  async runInference(prompt) {
-    if (!this.loaded || !this.wllama || !this.model) {
-      throw new Error("A local model must be loaded before inference.");
+  async ask(question, contextSummary) {
+    if (!this.loaded || !this.wllama) {
+      throw new Error("No local model loaded. Pick a model above first.");
     }
 
-    const result = await this.wllama.createCompletion(prompt, {
-      nPredict: 256,
-      sampling: {
-        temp: 0.25,
-        top_k: 40,
-        top_p: 0.9
-      }
-    });
-
-    return result.trim();
-  }
-
-  /**
-   * Force an isolation-level inference: summarize telemetry and produce
-   * a concise, safe operational recommendation.
-   * This is the "Smart Summary" driver used by the Dashboard.
-   */
-  async forceIsolationRecommendation(telemetrySummary) {
     const prompt = [
       "<|system|>",
-      "You are the Console local telemetry analyst.",
-      "Use only the provided telemetry.",
-      "Return a concise, safe operational recommendation.",
-      "Do not claim to execute hardware actions.",
+      "You are Console's on-device assistant. Answer using only the live telemetry context provided.",
+      "Keep answers concise and factual. Do not claim to execute hardware actions yourself.",
       "<|end|>",
       "<|user|>",
-      `Summarize all current telemetry data and generate an actionable recommendation.
-Telemetry: ${JSON.stringify(telemetrySummary)}`,
+      `Context: ${contextSummary || "No live context available."}`,
+      `Question: ${question}`,
       "<|end|>",
       "<|assistant|>"
     ].join("\n");
 
-    return this.runInference(prompt);
+    const result = await this.wllama.createCompletion(prompt, {
+      nPredict: 256,
+      sampling: { temp: 0.3, top_k: 40, top_p: 0.9 }
+    });
+
+    return typeof result === "string" ? result.trim() : String(result).trim();
   }
 
-  /**
-   * Generic chat completion for the AI Assistant panel.
-   */
-  async chat(messages) {
-    if (!this.loaded || !this.wllama || !this.model) {
+  async forceIsolationRecommendation(telemetrySummary) {
+    if (!this.loaded || !this.wllama) {
       throw new Error("No local model loaded.");
     }
+    return this.ask(
+      "Summarize all current telemetry data and generate an actionable recommendation.",
+      typeof telemetrySummary === "string" ? telemetrySummary : JSON.stringify(telemetrySummary)
+    );
+  }
 
-    const prompt = messages
-      .map((m) => `${m.role === "system" ? "<|system|>" : m.role === "user" ? "<|user|>" : "<|assistant|>"}${m.content}<|end|>`)
-      .join("\n") + "\n<|assistant|>";
-
-    return this.runInference(prompt);
+  async unload() {
+    if (this.wllama) {
+      try {
+        if (typeof this.wllama.exit === "function") await this.wllama.exit();
+      } catch { /* best-effort cleanup */ }
+    }
+    this.wllama = null;
+    this.loaded = false;
+    this.loadingModelName = null;
   }
 }
-
-// Singleton instance
-export const localModel = new LocalModelRuntime();
-export default localModel;
