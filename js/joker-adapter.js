@@ -1,9 +1,10 @@
-// Joker Adapter — Real Hardware (Web Bluetooth BLE GATT) + Simulation Fallback
+// Joker Adapter — Real Hardware (Web Bluetooth BLE GATT / Wi‑Fi / Custom PCB)
+// + Simulation Fallback
 //
-// The UI toggle switches between simulation and physical Web Bluetooth
-// without changing the Firewall, Watchdog, Vault, or HUD code.
+// The UI toggle switches between simulation and physical transports without
+// changing the Firewall, Watchdog, Vault, or HUD code.
 //
-// Browser requirements:
+// Browser requirements for BLE:
 // - Secure context (HTTPS or localhost)
 // - Chromium-based browser with Web Bluetooth (Chrome/Edge/Brave)
 // - The Joker Card must expose the specified custom BLE GATT service
@@ -53,6 +54,15 @@ export class JokerAdapter {
     this._onDisconnected = this._onDisconnected.bind(this);
   }
 
+  /**
+   * Read-only view of Stealth Mode state, exposed as a dedicated property
+   * (in addition to the underlying `stealthMode` field kept for backward
+   * compatibility with existing callers/tests).
+   */
+  get isStealthModeActive() {
+    return this.stealthMode === true;
+  }
+
   get canUseWebBluetooth() {
     return typeof navigator !== "undefined" && "bluetooth" in navigator;
   }
@@ -92,7 +102,7 @@ export class JokerAdapter {
 
     if (transport === "wifi" || transport === "custom") {
       const valid = Boolean(profile.endpointUrl && profile.endpointUrl.trim()) || Boolean(profile.wifiSsid && profile.wifiSsid.trim());
-      return { valid, warnings: valid ? [] : ["Enter either an endpoint URL or Wi‑Fi SSID for a custom board connection."] };
+      return { valid, warnings: valid ? [] : ["Enter either an endpoint URL or Wi\u2011Fi SSID for a custom board connection."] };
     }
 
     return { valid: false, warnings: ["Unsupported transport selected."] };
@@ -361,8 +371,9 @@ export class JokerAdapter {
 
   /**
    * Hard Kill Switch — puts the Joker Card into deep-sleep isolation.
-   * Requires explicit operator confirmation. Alert severity/vocabulary
-   * matches app.js's SEV_THEME (lowercase) and RECOMMENDATION_LABELS.
+   * Requires explicit operator confirmation. Sets isPoweredOff = true and
+   * always returns the resulting alert (severity kept lowercase "critical"
+   * to match the live UI's SEV_THEME lookup table).
    */
   async killDevice({ confirmed = false } = {}) {
     if (!confirmed) {
@@ -391,18 +402,17 @@ export class JokerAdapter {
     this.connected = false;
     this.disconnect();
 
-    return {
-      success: true,
-      alert: {
-        type: "POWER_LOSS",
-        severity: "critical",
-        message: "Joker Card entered isolated deep-sleep mode.",
-        predicted_state: "OFFLINE",
-        recommendation: "FLAG_FOR_REVIEW",
-        is_critical_leak: true,
-        createdAt: Date.now()
-      }
+    const alert = {
+      type: "POWER_LOSS",
+      severity: "critical",
+      message: "Joker Card entered isolated deep-sleep mode.",
+      predicted_state: "OFFLINE",
+      recommendation: "FLAG_FOR_REVIEW",
+      is_critical_leak: true,
+      createdAt: Date.now()
     };
+
+    return { success: true, alert };
   }
 
   isDevicePoweredOff() {
