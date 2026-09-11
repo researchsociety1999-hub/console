@@ -70,6 +70,7 @@ function isActionApproved(action) {
 }
 
 const DETERMINISTIC_FALLBACK_RECOMMENDATION = "Monitor Trend";
+const BAD_QUALITY_TEMP_THRESHOLD_C = 35;
 
 /**
  * Main ingress pipeline for a single raw telemetry packet. Synchronous and
@@ -158,6 +159,37 @@ export function finalizeContext(validatedPackets) {
 }
 
 /**
+ * Extracts a temperature reading (Celsius) from a telemetry snapshot in
+ * whatever reasonable shape it arrives — a raw module packet, a trusted
+ * packet, a sensor-fusion payload (telemetry.js's synthesizeSensorFusion),
+ * or a plain { value: number } shape. Returns null if none is found.
+ */
+function extractTemperatureC(telemetrySnapshot) {
+  if (!telemetrySnapshot || typeof telemetrySnapshot !== "object") return null;
+
+  const candidates = [
+    telemetrySnapshot.temperatureC,
+    telemetrySnapshot.tempC,
+    telemetrySnapshot.value?.temperatureC,
+    telemetrySnapshot.value?.tempC,
+    typeof telemetrySnapshot.value === "number" ? telemetrySnapshot.value : null,
+    telemetrySnapshot.sensorData?.tempC,
+    telemetrySnapshot.sensorData?.temperatureC
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return null;
+}
+
+function hasBadDataQuality(telemetrySnapshot) {
+  if (!telemetrySnapshot || typeof telemetrySnapshot !== "object") return false;
+  const quality = telemetrySnapshot.data_quality;
+  return quality === "BAD" || quality === "DEGRADED";
+}
+
+/**
  * AI-enriched alert generation. This is deliberately SEPARATE from
  * runDataFirewall()'s synchronous hot path — it's an async, best-effort
  * enrichment step that callers (Watchdog, app.js) can invoke when they
@@ -167,6 +199,12 @@ export function finalizeContext(validatedPackets) {
  * Security gate: if the model returns an empty/unusable recommendation,
  * this falls back to a deterministic "Monitor Trend" recommendation so the
  * UI never receives an empty AlertData.recommendation field.
+ *
+ * Sensor-driven critical override: independent of what the AI or the base
+ * alert says, if the raw SensorData itself reports data_quality "BAD" (or
+ * "DEGRADED") together with a temperature reading over 35°C, this function
+ * forces is_critical_leak: true and severity: "critical" so the full-screen
+ * red overlay is always triggered for that condition.
  *
  * @param {object} baseAlert - a deterministic alert object (from
  *   runDataFirewall's alert, or one synthesized by Watchdog) that already
@@ -183,33 +221,44 @@ export async function generateAlert(baseAlert, telemetrySnapshot, localModel = n
   if (!localModel || typeof localModel.runInference !== "function") {
     alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
     alert.predicted_state = alert.predicted_state || "NOMINAL";
-    return alert;
-  }
+  } else {
+    try {
+      const contextSummary = typeof telemetrySnapshot === "string" ? telemetrySnapshot : JSON.stringify(telemetrySnapshot ?? {});
+      const raw = await localModel.runInference(
+        "Given this telemetry, respond with a single line: 'PREDICTED_STATE: <state> | RECOMMENDATION: <short action>'.",
+        { contextSummary }
+      );
 
-  try {
-    const contextSummary = typeof telemetrySnapshot === "string" ? telemetrySnapshot : JSON.stringify(telemetrySnapshot ?? {});
-    const raw = await localModel.runInference(
-      "Given this telemetry, respond with a single line: 'PREDICTED_STATE: <state> | RECOMMENDATION: <short action>'.",
-      { contextSummary }
-    );
+      const predictedMatch = /PREDICTED_STATE:\s*([^|]+)/i.exec(raw || "");
+      const recommendationMatch = /RECOMMENDATION:\s*(.+)$/i.exec(raw || "");
 
-    const predictedMatch = /PREDICTED_STATE:\s*([^|]+)/i.exec(raw || "");
-    const recommendationMatch = /RECOMMENDATION:\s*(.+)$/i.exec(raw || "");
+      const aiPredictedState = predictedMatch ? predictedMatch[1].trim() : "";
+      const aiRecommendation = recommendationMatch ? recommendationMatch[1].trim() : (raw || "").trim();
 
-    const aiPredictedState = predictedMatch ? predictedMatch[1].trim() : "";
-    const aiRecommendation = recommendationMatch ? recommendationMatch[1].trim() : (raw || "").trim();
-
-    alert.predicted_state = aiPredictedState || alert.predicted_state || "NOMINAL";
-    alert.recommendation = aiRecommendation || alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
-    alert.recommendationSource = "ai";
-  } catch {
-    alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
-    alert.predicted_state = alert.predicted_state || "NOMINAL";
-    alert.recommendationSource = "deterministic_fallback";
+      alert.predicted_state = aiPredictedState || alert.predicted_state || "NOMINAL";
+      alert.recommendation = aiRecommendation || alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
+      alert.recommendationSource = "ai";
+    } catch {
+      alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
+      alert.predicted_state = alert.predicted_state || "NOMINAL";
+      alert.recommendationSource = "deterministic_fallback";
+    }
   }
 
   if (!alert.recommendation || !alert.recommendation.trim()) {
     alert.recommendation = DETERMINISTIC_FALLBACK_RECOMMENDATION;
+  }
+
+  // Sensor-driven critical override — takes priority over the AI's opinion.
+  const temperatureC = extractTemperatureC(telemetrySnapshot);
+  if (hasBadDataQuality(telemetrySnapshot) && temperatureC !== null && temperatureC > BAD_QUALITY_TEMP_THRESHOLD_C) {
+    alert.is_critical_leak = true;
+    alert.severity = "critical";
+    alert.predicted_state = "CRITICAL";
+    alert.sensorOverride = true;
+    alert.recommendation = alert.recommendation === DETERMINISTIC_FALLBACK_RECOMMENDATION
+      ? "Inspect thermal sensor immediately — degraded data quality above 35\u00b0C"
+      : alert.recommendation;
   }
 
   return alert;
