@@ -69,8 +69,14 @@ function isActionApproved(action) {
   return APPROVED_ACTIONS.includes(action);
 }
 
+const DETERMINISTIC_FALLBACK_RECOMMENDATION = "Monitor Trend";
+
 /**
- * Main ingress pipeline for a single raw telemetry packet.
+ * Main ingress pipeline for a single raw telemetry packet. Synchronous and
+ * fast on purpose — this is the real-time validation hot path and must not
+ * block on network/model calls. Optionally accepts deviceContext to gate
+ * telemetry when the console isn't connected to a trusted device profile.
+ *
  * HARD STOP: if the adapter reports the device is powered off/isolated,
  * no packet passes through — system is forced OFFLINE regardless of
  * whatever sensor readings might otherwise say.
@@ -100,7 +106,7 @@ export function runDataFirewall(rawPacket, deviceContext = {}) {
       context: { state: CARD_STATE.OFFLINE, reason: "DEVICE_POWERED_OFF" },
       alert: {
         type: "POWER_LOSS",
-        severity: "CRITICAL",
+        severity: "critical",
         source: "adapter",
         predicted_state: "OFFLINE",
         recommendation: "RECONNECT_DEVICE_WHEN_READY",
@@ -149,6 +155,64 @@ export function runDataFirewall(rawPacket, deviceContext = {}) {
 export function finalizeContext(validatedPackets) {
   const state = deriveCardState(validatedPackets);
   return { state, modules: validatedPackets.map(p => p.trusted), timestamp: Date.now() };
+}
+
+/**
+ * AI-enriched alert generation. This is deliberately SEPARATE from
+ * runDataFirewall()'s synchronous hot path — it's an async, best-effort
+ * enrichment step that callers (Watchdog, app.js) can invoke when they
+ * want an AI-generated recommendation and predicted_state attached to an
+ * alert, without ever blocking real-time packet validation on an LLM call.
+ *
+ * Security gate: if the model returns an empty/unusable recommendation,
+ * this falls back to a deterministic "Monitor Trend" recommendation so the
+ * UI never receives an empty AlertData.recommendation field.
+ *
+ * @param {object} baseAlert - a deterministic alert object (from
+ *   runDataFirewall's alert, or one synthesized by Watchdog) that already
+ *   has at least { type, severity, is_critical_leak }.
+ * @param {object} telemetrySnapshot - raw/trusted telemetry to ground the
+ *   model's reasoning (kept small — pass a summary, not the full history).
+ * @param {object} [localModel] - a LocalModelRuntime instance (or
+ *   compatible object exposing runInference(prompt, {contextSummary})).
+ *   If omitted or inference fails, the deterministic fallback is used.
+ */
+export async function generateAlert(baseAlert, telemetrySnapshot, localModel = null) {
+  const alert = { ...baseAlert, createdAt: baseAlert.createdAt || Date.now() };
+
+  if (!localModel || typeof localModel.runInference !== "function") {
+    alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
+    alert.predicted_state = alert.predicted_state || "NOMINAL";
+    return alert;
+  }
+
+  try {
+    const contextSummary = typeof telemetrySnapshot === "string" ? telemetrySnapshot : JSON.stringify(telemetrySnapshot ?? {});
+    const raw = await localModel.runInference(
+      "Given this telemetry, respond with a single line: 'PREDICTED_STATE: <state> | RECOMMENDATION: <short action>'.",
+      { contextSummary }
+    );
+
+    const predictedMatch = /PREDICTED_STATE:\s*([^|]+)/i.exec(raw || "");
+    const recommendationMatch = /RECOMMENDATION:\s*(.+)$/i.exec(raw || "");
+
+    const aiPredictedState = predictedMatch ? predictedMatch[1].trim() : "";
+    const aiRecommendation = recommendationMatch ? recommendationMatch[1].trim() : (raw || "").trim();
+
+    alert.predicted_state = aiPredictedState || alert.predicted_state || "NOMINAL";
+    alert.recommendation = aiRecommendation || alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
+    alert.recommendationSource = "ai";
+  } catch {
+    alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
+    alert.predicted_state = alert.predicted_state || "NOMINAL";
+    alert.recommendationSource = "deterministic_fallback";
+  }
+
+  if (!alert.recommendation || !alert.recommendation.trim()) {
+    alert.recommendation = DETERMINISTIC_FALLBACK_RECOMMENDATION;
+  }
+
+  return alert;
 }
 
 export async function dispatchApprovedCommand(adapter, action, payload) {
