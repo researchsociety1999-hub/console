@@ -1,15 +1,14 @@
 // Local Model Runtime — on-device GGUF inference via wllama (WebAssembly).
-// No API key, no server, no account. The GGUF file downloads once from
-// Hugging Face and is cached by the browser; inference after that is fully
-// offline. Public API matches what app.js calls:
+// No API key, no server, no account required for the default path. The GGUF
+// file downloads once from Hugging Face and is cached by the browser;
+// inference after that is fully offline. Public API used by app.js:
 //   new LocalModelRuntime()
 //   .loaded / .loadingModelName
 //   .loadFromHF(repo, file, onProgressPct)
 //   .ask(question, contextSummary)
+//   .runInference(prompt, { contextSummary, fallback })
 //   .unload()
 // CURATED_MODELS is a small, safe default catalog for the launcher grid.
-
-let wllamaModulePromise = null;
 
 export function formatWllamaLoadError(error) {
   const raw = error && (error.message || String(error));
@@ -24,6 +23,7 @@ export function formatWllamaLoadError(error) {
   return raw;
 }
 
+let wllamaModulePromise = null;
 function loadWllamaModule() {
   if (!wllamaModulePromise) {
     const localEntry = new URL("../node_modules/@wllama/wllama/esm/index.js", import.meta.url).href;
@@ -68,6 +68,11 @@ export class LocalModelRuntime {
     this.loadingModelName = null;
   }
 
+  /**
+   * Download (once, cached by the browser) and load a GGUF model by
+   * Hugging Face repo + filename. onProgress receives an integer 0-100
+   * or null when progress is indeterminate.
+   */
   async loadFromHF(repo, file, onProgress) {
     if (!repo || !file) {
       throw new Error("A Hugging Face repo and GGUF filename are required.");
@@ -100,15 +105,34 @@ export class LocalModelRuntime {
       this.loaded = false;
       this.loadingModelName = null;
       this.wllama = null;
-      throw error;
+      throw new Error(formatWllamaLoadError(error));
     }
   }
 
-  async ask(question, contextSummary) {
+  /**
+   * Low-level completion against the loaded model only. Throws if no
+   * model is loaded — callers that want automatic fallback should use
+   * runInference() instead.
+   */
+  async _completeLocal(prompt) {
     if (!this.loaded || !this.wllama) {
-      throw new Error("No local model loaded. Pick a model above first.");
+      throw new Error("No local model loaded.");
     }
 
+    const result = await this.wllama.createCompletion(prompt, {
+      nPredict: 256,
+      sampling: { temp: 0.3, top_k: 40, top_p: 0.9 }
+    });
+
+    return typeof result === "string" ? result.trim() : String(result).trim();
+  }
+
+  /**
+   * Ask the loaded model a question, given a short plain-text context
+   * summary built by the caller (e.g. buildMinimalAgentContext(state)).
+   * Returns the generated answer string. Throws if no model is loaded.
+   */
+  async ask(question, contextSummary) {
     const prompt = [
       "<|system|>",
       "You are Console's on-device assistant. Answer using only the live telemetry context provided.",
@@ -121,22 +145,75 @@ export class LocalModelRuntime {
       "<|assistant|>"
     ].join("\n");
 
-    const result = await this.wllama.createCompletion(prompt, {
-      nPredict: 256,
-      sampling: { temp: 0.3, top_k: 40, top_p: 0.9 }
-    });
-
-    return typeof result === "string" ? result.trim() : String(result).trim();
+    return this._completeLocal(prompt);
   }
 
-  async forceIsolationRecommendation(telemetrySummary) {
-    if (!this.loaded || !this.wllama) {
-      throw new Error("No local model loaded.");
-    }
-    return this.ask(
+  /**
+   * Force an isolation-style inference: summarize telemetry into an
+   * actionable recommendation string. Used by dashboard Smart Summary.
+   * Falls through runInference() so it inherits the same fallback path.
+   */
+  async forceIsolationRecommendation(telemetrySummary, options = {}) {
+    const contextSummary = typeof telemetrySummary === "string" ? telemetrySummary : JSON.stringify(telemetrySummary);
+    return this.runInference(
       "Summarize all current telemetry data and generate an actionable recommendation.",
-      typeof telemetrySummary === "string" ? telemetrySummary : JSON.stringify(telemetrySummary)
+      { contextSummary, ...options }
     );
+  }
+
+  /**
+   * The default inference entry point for the whole app. Prefers the
+   * local model; if it is not loaded or the completion throws, it calls
+   * an optional caller-supplied fallback function instead of ever
+   * importing a cloud/Supabase client directly from this module. If no
+   * fallback is supplied and the local model is unavailable, it rejects
+   * with a clear, actionable error rather than failing silently.
+   *
+   * @param {string} prompt - the user's question or task.
+   * @param {object} [options]
+   * @param {string} [options.contextSummary] - grounding context text.
+   * @param {(prompt: string, contextSummary: string) => Promise<string>} [options.fallback]
+   *        Optional async function the caller wires to its own external
+   *        agent (Cloud Agent, another API, etc). Only invoked if local
+   *        inference fails or no model is loaded.
+   */
+  async runInference(prompt, options = {}) {
+    const { contextSummary = "", fallback = null } = options;
+
+    const fullPrompt = [
+      "<|system|>",
+      "You are Console's on-device assistant. Answer using only the live telemetry context provided.",
+      "Keep answers concise and factual. Do not claim to execute hardware actions yourself.",
+      "<|end|>",
+      "<|user|>",
+      `Context: ${contextSummary || "No live context available."}`,
+      `Task: ${prompt}`,
+      "<|end|>",
+      "<|assistant|>"
+    ].join("\n");
+
+    if (this.loaded && this.wllama) {
+      try {
+        return await this._completeLocal(fullPrompt);
+      } catch (localError) {
+        if (typeof fallback === "function") {
+          try {
+            return await fallback(prompt, contextSummary);
+          } catch (fallbackError) {
+            throw new Error(
+              `Local inference failed (${localError.message || localError}); fallback also failed (${fallbackError.message || fallbackError}).`
+            );
+          }
+        }
+        throw new Error(`Local inference failed and no fallback was configured: ${localError.message || localError}`);
+      }
+    }
+
+    if (typeof fallback === "function") {
+      return fallback(prompt, contextSummary);
+    }
+
+    throw new Error("No local model is loaded and no fallback was configured.");
   }
 
   async unload() {
