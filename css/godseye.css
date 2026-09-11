@@ -1,6 +1,7 @@
-/* God's-Eye UI additions — predicted-state badge, AI-Acting toast, and
-   critical-leak escalation. This file is additive only: it does not
-   modify or duplicate any existing rule in app.css / states.css /
+/* God's-Eye UI additions — predicted-state badge, AI-Acting toast,
+   critical-leak escalation, Ghost-state listening pulse, AI Agent Active
+   badge, and predicted-state-driven action button theming. Additive only:
+   does not modify or duplicate any existing rule in app.css / states.css /
    tokens.css. Link it after those three stylesheets in index.html:
 
    <link rel="stylesheet" href="./css/godseye.css" />
@@ -84,4 +85,85 @@
 body.critical-leak .app {
   outline: 2px solid #ff4f66;
   outline-offset: -2px;
+}
+
+/* --- Ghost state: faint pulsing "listening" animation on the shell itself.
+   Layers on top of app.css's .app.ghost { filter/opacity } rule; does not
+   redeclare it, just adds a subtle breathing box-shadow so Ghost reads as
+   "quietly listening" rather than merely dimmed/inactive. --- */
+.app.ghost {
+  animation: ghost-listening-pulse 3.6s ease-in-out infinite;
+}
+
+@keyframes ghost-listening-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(60, 242, 236, 0); }
+  50% { box-shadow: 0 0 24px rgba(60, 242, 236, 0.10); }
+}
+
+/* --- AI Agent Active: small glowing badge next to the brand title, shown
+   only while Manifested and a local model is loaded. Toggle visibility by
+   adding/removing the "visible" class from JS, e.g.:
+     document.getElementById("aiAgentActiveBadge")
+       .classList.toggle("visible", sm.state === STATES.MANIFESTED && localModel.loaded);
+*/
+.ai-agent-active-badge {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #3cf2ec;
+  border: 1px solid rgba(60, 242, 236, 0.5);
+  background: rgba(60, 242, 236, 0.08);
+  animation: ai-agent-glow 2s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+.ai-agent-active-badge.visible {
+  display: inline-flex;
+}
+
+@keyframes ai-agent-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(60, 242, 236, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(60, 242, 236, 0.65); }
+}
+
+/* --- Predicted-state-driven Action Button. Apply data-predicted-state on
+   the primary action button (e.g. #connect or a dedicated #actionButton)
+   and these rules retint it without any inline JS style manipulation:
+     btn.dataset.predictedState = alert.predicted_state; // "NOMINAL"|"WATCH"|"ELEVATED"|"CRITICAL"
+*/
+.btn[data-predicted-state] {
+  transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease, color 0.25s ease;
+}
+
+.btn[data-predicted-state="NOMINAL"] {
+  border-color: #3cf2ec;
+  color: #3cf2ec;
+  box-shadow: 0 0 8px rgba(60, 242, 236, 0.25);
+}
+
+.btn[data-predicted-state="WATCH"] {
+  border-color: #ffc857;
+  color: #ffc857;
+  box-shadow: 0 0 8px rgba(255, 200, 87, 0.28);
+}
+
+.btn[data-predicted-state="ELEVATED"] {
+  border-color: #ff9a5a;
+  color: #ff9a5a;
+  box-shadow: 0 0 10px rgba(255, 154, 90, 0.32);
+}
+
+.btn[data-predicted-state="CRITICAL"] {
+  border-color: #ff4f66;
+  color: #ff4f66;
+  background: rgba(255, 79, 102, 0.12);
+  box-shadow: 0 0 16px rgba(255, 79, 102, 0.5);
+  animation: predicted-state-pulse 1.2s ease-in-out infinite;
 }
