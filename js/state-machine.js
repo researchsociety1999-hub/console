@@ -7,7 +7,7 @@ export const STATES = Object.freeze({
 
 export class ConsoleStateMachine {
   constructor(onChange) {
-    this._state = STATES.LOST;
+    this._state = STATES.GHOST;
     this._onChange = onChange || (() => {});
   }
 
@@ -17,9 +17,13 @@ export class ConsoleStateMachine {
     this._transition(STATES.MANIFESTED);
   }
 
+  wake() {
+    this.manifest();
+  }
+
   enterGhost() {
-    if (this._state === STATES.LOST) return this.manifest();
-    this._transition(this._state === STATES.GHOST ? STATES.MANIFESTED : STATES.GHOST);
+    if (this._state === STATES.LOST) return;
+    this._transition(STATES.GHOST);
   }
 
   sever() {

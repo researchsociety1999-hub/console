@@ -143,6 +143,25 @@ function renderTrendArrow(trend) {
   else { arrow.textContent = "\u2015"; arrow.classList.add("stable"); }
 }
 
+function eraseRecentSessionMemory() {
+  const safeClear = async () => {
+    try {
+      await vault.clearRecentRecords(5 * 60 * 1000);
+      await vault.clearCurrentSensorSnapshot();
+      const recent = history.filter((entry) => Date.now() - new Date(entry.t || Date.now()).getTime() < 5 * 60 * 1000);
+      if (recent.length) {
+        history.splice(0, history.length, ...history.filter((entry) => Date.now() - new Date(entry.t || Date.now()).getTime() >= 5 * 60 * 1000));
+      }
+      sessionStorage.removeItem(SESSION_KEY);
+      log("Session memory erased: last 5 minutes of alert history and live sensor snapshot cleared.", "SECURE");
+    } catch (error) {
+      log(`Session erasure failed: ${error.message || error}`, "WARN");
+    }
+  };
+
+  safeClear();
+}
+
 function render() {
   root.classList.remove("lost", "ghost", "manifested");
   root.classList.add(sm.state);
@@ -261,6 +280,15 @@ function wireModuleDetailActions(container) {
         const target = document.getElementById(el.dataset.target);
         if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
       }
+        } else if (action === "restart-module") {
+          const moduleName = el.dataset.module || activeModule;
+          try {
+            const result = await adapter.restartModule(moduleName);
+            log(`Module "${moduleName}" restart ${result.recovered ? "succeeded" : "did not resolve the fault"}.`, result.recovered ? "ACTION" : "WARN");
+            pushActionQueue(`Restart ${moduleName}`, result.recovered ? "recovered" : "unresolved");
+          } catch (err) {
+            log(String(err.message || err), "ERROR");
+          }
     });
   });
 }
@@ -422,9 +450,25 @@ document.getElementById("applyConnectionProfile").addEventListener("click", () =
 });
 
 document.getElementById("ghost").addEventListener("click", () => {
-  if (sm.state === STATES.LOST) return manifest();
+  if (sm.state === STATES.LOST) {
+    log("Wake gesture required: manifest the card before re-entering Ghost Protocol.", "WARN");
+    return;
+  }
+  if (sm.state === STATES.GHOST) {
+    log("Card is already in Ghost Protocol; user action required to wake it.", "WARN");
+    return;
+  }
   sm.enterGhost();
-  log(sm.state === STATES.GHOST ? "Ghost Protocol entered; nonessential UI suppressed." : "Ghost Protocol exited.");
+  log("Ghost Protocol entered; silent nonessential UI suppressed until explicit wake.", "SECURE");
+});
+
+const wakeButton = document.getElementById("connect");
+wakeButton?.addEventListener("click", async () => {
+  if (sm.state === STATES.GHOST || sm.state === STATES.LOST) {
+    await manifest();
+    return;
+  }
+  await manifest();
 });
 
 document.getElementById("stateBtn").addEventListener("click", () => {
@@ -439,6 +483,20 @@ document.getElementById("stealthToggle").addEventListener("click", () => {
   log(`Stealth Mode ${state.stealthMode ? "ENABLED \u2014 RGB/Buzzer/WiFi signaling disabled, Ghost Protocol forced" : "disabled"}.`, "SECURE");
   if (state.stealthMode && sm.state === STATES.MANIFESTED) sm.enterGhost();
   render();
+});
+
+document.getElementById("killDeviceToggle").addEventListener("click", async () => {
+  if (!confirm("Confirm hardware isolation kill switch? This will force deep-sleep and disconnect the current Joker session.")) return;
+
+  try {
+    const result = await adapter.killDevice({ confirmed: true });
+    sm.sever();
+    document.body.classList.add("critical-leak");
+    log(`Kill switch ${result.success ? "engaged" : "rejected"}: ${result.alert?.message || "unknown state"}.`, result.success ? "ALERT" : "WARN");
+    render();
+  } catch (err) {
+    log(String(err.message || err), "ERROR");
+  }
 });
 
 document.getElementById("diagnostic").addEventListener("click", async () => {
@@ -613,7 +671,7 @@ document.getElementById("chat").addEventListener("submit", async (e) => {
 // --- Watchdog: 15s interval, BLE novelty (first) + per-module health + thermal (last) ---
 const watchdog = new Watchdog({
   intervalMs: 15000,
-  isActive: () => sm.state === STATES.MANIFESTED,
+  isActive: () => sm.state !== STATES.LOST,
   getThermalSample: () => {
     const sample = adapter.sample();
     if (!sample) return null;
@@ -649,6 +707,18 @@ const watchdog = new Watchdog({
       playBeep(alert.severity === "critical" ? 1200 : alert.severity === "high" ? 1000 : 700, 220);
     }
 
+    if (sm.state === STATES.GHOST) {
+      sm.manifest();
+      log("New BLE device forced the system back to Manifested state for immediate review.", "ALERT");
+    }
+
+    if (alert.type === "NEW_BLE_DEVICE" || alert.is_critical_leak) {
+      if (sm.state === STATES.GHOST || sm.state === STATES.LOST) {
+        sm.manifest();
+      }
+      document.body.classList.add("critical-leak");
+    }
+
     if (vault.isUnlocked) {
       try { await vault.store(alert); } catch { /* non-fatal */ }
     }
@@ -657,6 +727,26 @@ const watchdog = new Watchdog({
     render();
   }
 });
+
+function enforceGhostGuard() {
+  const rootState = sm.state;
+  if (rootState === STATES.GHOST) {
+    root.classList.add("ghost");
+    root.setAttribute("data-ghost-lock", "true");
+    return true;
+  }
+  root.removeAttribute("data-ghost-lock");
+  return false;
+}
+
+sm._onChange = (next, prev) => {
+  const before = prev;
+  if (next === STATES.LOST && (before === STATES.MANIFESTED || before === STATES.GHOST)) {
+    eraseRecentSessionMemory();
+  }
+  render();
+};
+
 watchdog.start();
 
 log("Console initialized. Session cache restored. Watchdog running every 15s: BLE novelty first, then module health, then thermal/predictive trend.");

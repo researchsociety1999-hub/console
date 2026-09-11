@@ -9,18 +9,27 @@ export function renderModuleDetailHtml(id, state) {
         <div class="line"><span>Events (last 5 min)</span><strong>${state.nfcEvents}</strong></div>
         <div class="line"><span>Reader</span><strong>PN532 &middot; 13.56 MHz (simulated)</strong></div>
         <p class="consent-note">Tag UIDs and payloads are never displayed in full; only event counts feed the dashboard and Watchdog.</p>
-        <div class="actions"><button class="btn" data-action="rescan">Rescan Environment</button></div>`;
+        <div class="actions">
+          <button class="btn" data-action="rescan">Rescan Environment</button>
+          <button class="btn" data-action="restart-module" data-module="nfc">Restart NFC</button>
+        </div>`;
     case "wifi":
       return `
         <div class="line"><span>Access points</span><strong>${state.aps}</strong></div>
         <div class="line"><span>Mode</span><strong>Passive survey (observe-only)</strong></div>
         <p class="consent-note">No deauthentication, injection, or active probing is performed by this panel.</p>
-        <div class="actions"><button class="btn" data-action="rescan">Rescan Environment</button></div>`;
+        <div class="actions">
+          <button class="btn" data-action="rescan">Rescan Environment</button>
+          <button class="btn" data-action="restart-module" data-module="wifi">Restart Wi‑Fi</button>
+        </div>`;
     case "ble":
       return `
         <div class="line"><span>Discovered devices</span><strong>${state.ble}</strong></div>
         <div class="line"><span>Mode</span><strong>Scanner (names / RSSI / service hints)</strong></div>
-        <div class="actions"><button class="btn" data-action="rescan">Rescan Environment</button></div>`;
+        <div class="actions">
+          <button class="btn" data-action="rescan">Rescan Environment</button>
+          <button class="btn" data-action="restart-module" data-module="ble">Restart BLE</button>
+        </div>`;
     case "badusb":
       return `
         <p class="consent-note">Every action below requires an explicit confirmation dialog and is simulated unless a real Joker transport is connected in <code>js/joker-adapter.js</code>.</p>

@@ -15,6 +15,11 @@ button { cursor: pointer; }
 
 .app { max-width: 1480px; margin: auto; padding: 14px 14px 30px; }
 
+.app.ghost {
+  filter: grayscale(0.5);
+  opacity: 0.8;
+}
+
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 10px; padding: 7px 2px 18px;

@@ -66,6 +66,26 @@ export function summarizeEnvironment(state) {
   };
 }
 
+export function synthesizeSensorFusion(overrides = {}) {
+  const payload = {
+    tempC: overrides.tempC ?? 32,
+    batteryPercent: overrides.batteryPercent ?? 82,
+    nfcUid: overrides.nfcUid ?? "NFC-UNKNOWN",
+    wifiRssi: overrides.wifiRssi ?? -58,
+    bleDeviceCount: overrides.bleDeviceCount ?? 0,
+    timestamp: Date.now()
+  };
+
+  return {
+    source_module: "fusion",
+    ok: true,
+    data_quality: "OK",
+    timestamp: payload.timestamp,
+    value: payload,
+    sensorData: payload
+  };
+}
+
 /**
  * Generates a single SensorData sample tagged with its originating module
  * AND a data_quality flag ("OK" | "DEGRADED"). Each hardware module has a

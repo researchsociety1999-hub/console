@@ -46,14 +46,14 @@ describe('data firewall', () => {
 });
 
 describe('state machine', () => {
-  it('moves through lost -> ghost -> manifested transitions', () => {
+  it('starts in ghost mode and requires an explicit wake action to manifest', () => {
     const sm = new ConsoleStateMachine();
-    expect(sm.state).toBe(STATES.LOST);
+    expect(sm.state).toBe(STATES.GHOST);
     sm.manifest();
     expect(sm.state).toBe(STATES.MANIFESTED);
     sm.enterGhost();
     expect(sm.state).toBe(STATES.GHOST);
-    sm.enterGhost();
+    sm.manifest();
     expect(sm.state).toBe(STATES.MANIFESTED);
   });
 });

@@ -110,4 +110,34 @@ export class Vault {
       tx.onerror = () => reject(tx.error);
     });
   }
+
+  async clearRecentRecords(maxAgeMs = 5 * 60 * 1000) {
+    const db = await openDb();
+    const rows = await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const req = tx.objectStore(STORE_NAME).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+
+    const cutoff = Date.now() - maxAgeMs;
+    const staleIds = rows
+      .filter((row) => typeof row.createdAt === "number" && row.createdAt >= cutoff)
+      .map((row) => row.id);
+
+    if (!staleIds.length) return true;
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      staleIds.forEach((id) => store.delete(id));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async clearCurrentSensorSnapshot() {
+    localStorage.removeItem("console-current-sensor-data");
+    return true;
+  }
 }

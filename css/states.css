@@ -1,8 +1,10 @@
-.ghost .panel:not(.hero), .ghost .console { opacity: 0.16; filter: grayscale(0.7); }
+.ghost .panel:not(.hero), .ghost .console { opacity: 0.18; filter: grayscale(0.7); }
 .ghost .hud { gap: 5px; }
 .ghost .panel { min-height: 72px; }
 .ghost .panel > *:not(h2) { display: none; }
 .ghost .hero { grid-column: span 12; }
+.ghost .hero .actions button:not(#ghost) { pointer-events: none; opacity: 0.35; }
+.ghost #connect { pointer-events: auto; }
 
 .lost .ribbon { border-color: #6d2834; background: #211116; color: #ff9aaa; }
 .lost .hero::before { background: var(--red); }
