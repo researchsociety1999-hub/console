@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import { ConsoleStateMachine, STATES } from '../js/state-machine.js';
 import { validateModulePacket, sanitizeValue, computeTrustScore, deriveCardState, dispatchApprovedCommand, isActionApproved, runDataFirewall } from '../js/data-firewall.js';
 import { Watchdog } from '../js/watchdog.js';
 import { formatWllamaLoadError } from '../js/local-model.js';
 import { JokerAdapter } from '../js/joker-adapter.js';
+import { renderModuleDetailHtml } from '../js/module-detail.js';
 
 const validPacket = {
   source_module: 'wifi',
@@ -101,6 +103,67 @@ describe('connection profile and firewall gating', () => {
     const result = runDataFirewall(validPacket, { connected: false, transport: 'wifi', boardType: 'Custom PCB' });
     expect(result.context.reason).toBe('DEVICE_NOT_CONNECTED');
     expect(result.alert.type).toBe('DEVICE_NOT_CONNECTED');
+  });
+
+  it('connects in simulation and disconnects cleanly', async () => {
+    const adapter = new JokerAdapter();
+    await adapter.connect();
+    expect(adapter.connected).toBe(true);
+    expect(adapter.sample()).toBeTruthy();
+    adapter.disconnect();
+    expect(adapter.connected).toBe(false);
+    expect(adapter.sample()).toBeNull();
+  });
+
+  it('rejects incomplete physical connection profiles before connecting', async () => {
+    const adapter = new JokerAdapter();
+    adapter.setProfile({ transport: 'wifi', endpointUrl: '', wifiSsid: '' });
+    expect(adapter.validateConnectionProfile().valid).toBe(false);
+    await expect(adapter.connect()).rejects.toThrow(/endpoint URL|Wi-Fi SSID/i);
+  });
+
+  it('routes safe module commands and enforces stealth output suppression', async () => {
+    const adapter = new JokerAdapter();
+    await adapter.connect();
+    expect((await adapter.setGpioPin(1, 'HIGH')).action).toBe('GPIO_SET');
+    expect((await adapter.setRgbMode('alert-sweep')).action).toBe('RGB_MODE');
+    await adapter.setStealthMode(true);
+    expect((await adapter.setRgbMode('alert-sweep')).status).toBe('suppressed_by_stealth_mode');
+    expect((await adapter.sendBuzzerTone()).status).toBe('suppressed_by_stealth_mode');
+    expect((await adapter.restartModule('ble')).action).toBe('MODULE_RESTART');
+  });
+
+  it('requires confirmation and then executes the hardware kill switch', async () => {
+    const adapter = new JokerAdapter();
+    await adapter.connect();
+    expect((await adapter.killDevice()).requiresConfirmation).toBe(true);
+    const result = await adapter.killDevice({ confirmed: true });
+    expect(result.success).toBe(true);
+    expect(adapter.isDevicePoweredOff()).toBe(true);
+    expect(adapter.connected).toBe(false);
+  });
+});
+
+describe('HUD wiring and generated module controls', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+
+  it('contains the primary HUD controls and loads the app controller', () => {
+    for (const id of ['connect', 'ghost', 'diagnostic', 'stateBtn', 'stealthToggle', 'killDeviceToggle', 'applyConnectionProfile', 'exportIntel', 'clearVault', 'unlockVault']) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect(html).toContain('<script type="module" src="./js/app.js"></script>');
+  });
+
+  it('renders controls for every interactive hardware module', () => {
+    const state = { nfcEvents: 0, aps: 0, ble: 0 };
+    expect(renderModuleDetailHtml('nfc', state)).toContain('data-action="restart-module"');
+    expect(renderModuleDetailHtml('wifi', state)).toContain('data-module="wifi"');
+    expect(renderModuleDetailHtml('ble', state)).toContain('data-module="ble"');
+    expect(renderModuleDetailHtml('badusb', state)).toContain('data-action="hack"');
+    expect(renderModuleDetailHtml('gpio', state)).toContain('data-action="gpio"');
+    expect(renderModuleDetailHtml('rgb', state)).toContain('data-action="rgb"');
+    expect(renderModuleDetailHtml('buzzer', state)).toContain('data-action="buzzer-test"');
+    expect(renderModuleDetailHtml('console', state)).toContain('data-action="scroll"');
   });
 });
 

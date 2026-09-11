@@ -279,16 +279,16 @@ function wireModuleDetailActions(container) {
       } else if (action === "scroll") {
         const target = document.getElementById(el.dataset.target);
         if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else if (action === "restart-module") {
+        const moduleName = el.dataset.module || activeModule;
+        try {
+          const result = await adapter.restartModule(moduleName);
+          log(`Module "${moduleName}" restart ${result.recovered ? "succeeded" : "did not resolve the fault"}.`, result.recovered ? "ACTION" : "WARN");
+          pushActionQueue(`Restart ${moduleName}`, result.recovered ? "recovered" : "unresolved");
+        } catch (err) {
+          log(String(err.message || err), "ERROR");
+        }
       }
-        } else if (action === "restart-module") {
-          const moduleName = el.dataset.module || activeModule;
-          try {
-            const result = await adapter.restartModule(moduleName);
-            log(`Module "${moduleName}" restart ${result.recovered ? "succeeded" : "did not resolve the fault"}.`, result.recovered ? "ACTION" : "WARN");
-            pushActionQueue(`Restart ${moduleName}`, result.recovered ? "recovered" : "unresolved");
-          } catch (err) {
-            log(String(err.message || err), "ERROR");
-          }
     });
   });
 }
