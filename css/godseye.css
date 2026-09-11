@@ -1,0 +1,87 @@
+/* God's-Eye UI additions — predicted-state badge, AI-Acting toast, and
+   critical-leak escalation. This file is additive only: it does not
+   modify or duplicate any existing rule in app.css / states.css /
+   tokens.css. Link it after those three stylesheets in index.html:
+
+   <link rel="stylesheet" href="./css/godseye.css" />
+*/
+
+.predicted-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--sev-color, #3cf2ec);
+  color: var(--sev-color, #3cf2ec);
+  background: color-mix(in srgb, var(--sev-color, #3cf2ec) 12%, transparent);
+  box-shadow: 0 0 10px var(--sev-glow, rgba(60, 242, 236, 0.28));
+  animation: predicted-state-pulse 2.4s ease-in-out infinite;
+}
+
+.predicted-state-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+@keyframes predicted-state-pulse {
+  0%, 100% { box-shadow: 0 0 6px var(--sev-glow, rgba(60, 242, 236, 0.28)); }
+  50% { box-shadow: 0 0 16px var(--sev-glow, rgba(60, 242, 236, 0.5)); }
+}
+
+/* --- AI Acting toast: small, temporary indicator shown while a command
+   is in flight (e.g. during runHackPipeline / sendAction-style calls). --- */
+.ai-acting-toast {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: #0b1417;
+  border: 1px solid #34565b;
+  color: #3cf2ec;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.ai-acting-toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.ai-acting-toast .spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(60, 242, 236, 0.25);
+  border-top-color: #3cf2ec;
+  animation: ai-acting-spin 0.7s linear infinite;
+}
+
+@keyframes ai-acting-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* --- Self-correction: critical-leak body class, in case app.css's
+   version is ever removed. Safe to keep both — this only adds an
+   outline treatment and does not redeclare background/overlay rules. --- */
+body.critical-leak .app {
+  outline: 2px solid #ff4f66;
+  outline-offset: -2px;
+}
