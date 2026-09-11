@@ -411,9 +411,18 @@ function applyConnectionProfileToUi(profile) {
 async function manifest() {
   const profile = readConnectionProfileFromUi();
   adapter.setProfile(profile);
-  adapter.setMode(profile.transport === "ble" ? "ble" : profile.transport === "wifi" ? "wifi" : profile.transport === "custom" ? "custom" : "simulated");
+  const mode = profile.transport === "ble" ? "ble" : profile.transport === "wifi" ? "wifi" : profile.transport === "custom" ? "custom" : "simulated";
+  const modeAvailable = adapter.setMode(mode);
+  if (!modeAvailable && mode === "ble") {
+    throw new Error("Web Bluetooth is unavailable. Use Chrome or Edge over HTTPS/localhost, or choose Simulated transport.");
+  }
 
   try {
+    const connectButton = document.getElementById("connect");
+    if (connectButton) {
+      connectButton.disabled = true;
+      connectButton.textContent = "Connecting...";
+    }
     const connection = await adapter.connect();
     sm.manifest();
     const sample = adapter.sample();
@@ -432,10 +441,18 @@ async function manifest() {
     log(`Connection failed: ${err.message || err}`, "ERROR");
     document.getElementById("agent").textContent = `Connection failed: ${err.message || err}`;
     throw err;
+  } finally {
+    const connectButton = document.getElementById("connect");
+    if (connectButton) {
+      connectButton.disabled = false;
+      connectButton.textContent = adapter.connected ? "Joker Connected" : "Connect Joker";
+    }
   }
 }
 
-document.getElementById("connect").addEventListener("click", manifest);
+document.getElementById("connect").addEventListener("click", () => {
+  manifest().catch(() => {});
+});
 
 document.getElementById("applyConnectionProfile").addEventListener("click", () => {
   const profile = readConnectionProfileFromUi();
@@ -460,15 +477,6 @@ document.getElementById("ghost").addEventListener("click", () => {
   }
   sm.enterGhost();
   log("Ghost Protocol entered; silent nonessential UI suppressed until explicit wake.", "SECURE");
-});
-
-const wakeButton = document.getElementById("connect");
-wakeButton?.addEventListener("click", async () => {
-  if (sm.state === STATES.GHOST || sm.state === STATES.LOST) {
-    await manifest();
-    return;
-  }
-  await manifest();
 });
 
 document.getElementById("stateBtn").addEventListener("click", () => {
