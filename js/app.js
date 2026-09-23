@@ -1,6 +1,5 @@
 import { JokerAdapter } from './joker-adapter.js';
 import { DataFirewall, SecurityAuditFirewall } from './data-firewall.js';
-import { LocalModelRuntime } from './local-model.js';
 import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor, NetworkRadarScanner } from './security-audit-suite.js';
 import { LocalConsoleLLM } from './local-llm-controller.js';
 
@@ -14,7 +13,6 @@ export class AppController {
   constructor() {
     this.adapter = new JokerAdapter();
     this.firewall = new DataFirewall();
-    this.localModel = new LocalModelRuntime();
     this.vaultUnlocked = false;
     this.auditFirewall = new SecurityAuditFirewall({ vault: this.createLocalVaultBridge() });
     this.nfcAuditor = new NFCSecurityAuditor();
