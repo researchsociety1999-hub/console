@@ -94,6 +94,24 @@
           </div>
         </div>
       </section>
+
+      <section id="local-llm-panel" aria-labelledby="local-llm-title">
+        <h2 id="local-llm-title">Autonomous Local LLM Controller</h2>
+        <p>Runs entirely in-browser via WebAssembly. No cloud inference endpoint is used. Destructive actions (vault unlock, zeroize) always require explicit local confirmation.</p>
+
+        <div id="model-upload-zone">
+          <input id="gguf-file-input" type="file" accept=".gguf" hidden>
+          <label for="gguf-file-input"><button type="button" id="select-gguf-btn">Select Local GGUF Model</button></label>
+          <div id="model-loading-status" role="status">No model loaded.</div>
+        </div>
+
+        <div id="llm-console-interface" class="disabled-panel" aria-disabled="true">
+          <label for="llm-command-input">Local instruction</label>
+          <textarea id="llm-command-input" rows="4" placeholder="e.g., Read the thermal sweep and summarize anomalies."></textarea>
+          <button id="llm-execute-btn">Run Local Inference</button>
+          <div id="llm-output-log" role="log" aria-live="polite"></div>
+        </div>
+      </section>
     </main>
   </div>
   <script type="module" src="js/app.js"></script>

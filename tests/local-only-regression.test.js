@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { DataFirewall, SecurityAuditFirewall } from '../js/data-firewall.js';
 import { JokerAdapter } from '../js/joker-adapter.js';
 import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from '../js/security-audit-suite.js';
+import { LocalConsoleLLM } from '../js/local-llm-controller.js';
 
 describe('Local-Only Core Architecture', () => {
   it('DataFirewall evaluates alerts locally without external requests', () => {
@@ -86,5 +87,70 @@ describe('Defensive Audit and Compliance', () => {
     expect(sourceText).not.toMatch(/supabase|onvif|rtsp|fetch\(|websocket.*wss?:\/\//i);
     const adapter = new JokerAdapter();
     expect(() => adapter.serializeSafeAuditEvent('CAMERA_DISCOVERY', {})).toThrow(/Unsupported/);
+  });
+});
+
+describe('Local GGUF LLM Console Controller', () => {
+  function buildStubAppController() {
+    const adapter = { connected: true, setGpioPin: vi.fn(() => ({ status: 'SET_LOCALLY' })), setModuleState: vi.fn(() => ({ status: 'SET_LOCALLY' })) };
+    return {
+      adapter,
+      scanThermal: vi.fn(async () => ({ status: 'NORMAL' })),
+      handleVaultUnlock: vi.fn(),
+      clearAuditSession: vi.fn()
+    };
+  }
+
+  it('parses a structured JSON tool command from model output', () => {
+    const llm = new LocalConsoleLLM({ appController: buildStubAppController() });
+    const result = llm.parseAndExecuteTools('Sure thing. {"action": "READ_THERMAL_SWEEP", "params": {}} Done.');
+    expect(result.executed.action).toBe('READ_THERMAL_SWEEP');
+    expect(result.executed.status).toBe('EXECUTED');
+  });
+
+  it('routes SET_GPIO_PIN, READ_THERMAL_SWEEP, and ZEROIZE_ALL to valid application methods', async () => {
+    const appController = buildStubAppController();
+    const llm = new LocalConsoleLLM({ appController });
+    llm.dispatchCommand({ action: 'SET_GPIO_PIN', params: { pin: 1, value: 'HIGH' } });
+    expect(appController.adapter.setGpioPin).toHaveBeenCalledWith(1, 'HIGH');
+
+    llm.dispatchCommand({ action: 'READ_THERMAL_SWEEP', params: {} });
+    expect(appController.scanThermal).toHaveBeenCalled();
+
+    const blocked = llm.dispatchCommand({ action: 'ZEROIZE_ALL', params: {} });
+    expect(blocked.status).toBe('CONFIRMATION_REQUIRED');
+    expect(appController.clearAuditSession).not.toHaveBeenCalled();
+
+    const confirmed = llm.dispatchCommand({ action: 'ZEROIZE_ALL', params: { humanConfirmed: true } });
+    expect(confirmed.status).toBe('EXECUTED');
+    expect(appController.clearAuditSession).toHaveBeenCalled();
+  });
+
+  it('requires explicit human confirmation before unlocking the vault via the model', () => {
+    const appController = buildStubAppController();
+    const llm = new LocalConsoleLLM({ appController });
+    const blocked = llm.dispatchCommand({ action: 'UNLOCK_VAULT_SESSION', params: {} });
+    expect(blocked.status).toBe('CONFIRMATION_REQUIRED');
+    expect(appController.handleVaultUnlock).not.toHaveBeenCalled();
+    const confirmed = llm.dispatchCommand({ action: 'UNLOCK_VAULT_SESSION', params: { humanConfirmed: true } });
+    expect(confirmed.status).toBe('EXECUTED');
+    expect(appController.handleVaultUnlock).toHaveBeenCalled();
+  });
+
+  it('clears the Wllama runtime reference on session unload', () => {
+    const llm = new LocalConsoleLLM({ appController: buildStubAppController() });
+    llm.wllama = {};
+    llm.loaded = true;
+    llm.loadingModelName = 'model.gguf';
+    llm.unloadSession();
+    expect(llm.wllama).toBeNull();
+    expect(llm.loaded).toBe(false);
+    expect(llm.loadingModelName).toBeNull();
+  });
+
+  it('contains no cloud endpoints, remote API keys, or external LLM provider URLs', async () => {
+    const source = await import('../js/local-llm-controller.js');
+    const sourceText = JSON.stringify(source);
+    expect(sourceText).not.toMatch(/openai\.com|anthropic\.com|api\.[a-z]+\.com|sk-[a-zA-Z0-9]{20,}|https?:\/\//i);
   });
 });

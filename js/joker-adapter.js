@@ -2,6 +2,8 @@ export class JokerAdapter {
   constructor() {
     this.connected = false;
     this.transport = 'Simulated';
+    this.moduleStates = {};
+    this.gpioState = {};
   }
 
   async connect(profile = {}) {
@@ -58,5 +60,21 @@ export class JokerAdapter {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
     if (!parsed || typeof parsed !== 'object' || !parsed.type) throw new Error('Invalid safe audit event payload.');
     return this.serializeSafeAuditEvent(parsed.type, parsed.data || {});
+  }
+
+  setGpioPin(pin, value) {
+    if (!this.connected) throw new Error('Connect local hardware before setting GPIO state.');
+    const pinId = String(pin);
+    const normalizedValue = value === true || value === 'HIGH' || value === 1 ? 'HIGH' : 'LOW';
+    this.gpioState[pinId] = normalizedValue;
+    return { pin: pinId, value: normalizedValue, status: 'SET_LOCALLY' };
+  }
+
+  setModuleState(moduleId, state) {
+    if (!this.connected) throw new Error('Connect local hardware before toggling a module.');
+    const id = String(moduleId || 'unknown');
+    const normalizedState = state === true || state === 'ON' ? 'ON' : 'OFF';
+    this.moduleStates[id] = normalizedState;
+    return { moduleId: id, state: normalizedState, status: 'SET_LOCALLY' };
   }
 }

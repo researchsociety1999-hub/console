@@ -2,6 +2,7 @@ import { JokerAdapter } from './joker-adapter.js';
 import { DataFirewall, SecurityAuditFirewall } from './data-firewall.js';
 import { LocalModelRuntime } from './local-model.js';
 import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from './security-audit-suite.js';
+import { LocalConsoleLLM } from './local-llm-controller.js';
 
 export class AppController {
   constructor() {
@@ -14,6 +15,7 @@ export class AppController {
     this.thermalScanner = new TSCMThermalScanner();
     this.gpioMonitor = new GPIOSecurityMonitor({ dataFirewall: this.auditFirewall });
     this.assetAuditor = new OfflineAssetAuditor();
+    this.localLLM = new LocalConsoleLLM({ appController: this, dataFirewall: this.auditFirewall });
     this.pollTimer = null;
   }
 
@@ -28,8 +30,8 @@ export class AppController {
     this.bindEvents();
     this.updateStatus('MANIFESTED / TRUSTED');
     this.setAuditLocked(true, 'Locked: authorization required.');
-    window.addEventListener('pagehide', () => this.clearAuditSession());
-    window.addEventListener('beforeunload', () => this.clearAuditSession());
+    window.addEventListener('pagehide', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
+    window.addEventListener('beforeunload', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
   }
 
   bindEvents() {
@@ -43,6 +45,8 @@ export class AppController {
     this.bind('refresh-gpio-btn', 'click', () => this.refreshGpio());
     this.bind('export-compliance-btn', 'click', () => this.exportComplianceReport());
     this.bind('clear-audit-session-btn', 'click', () => this.clearAuditSession());
+    this.bind('gguf-file-input', 'change', (event) => this.handleGgufFileSelected(event));
+    this.bind('llm-execute-btn', 'click', () => this.handleLlmExecute());
   }
 
   bind(id, event, handler) {
@@ -54,6 +58,7 @@ export class AppController {
     if (this.adapter.connected) {
       await this.adapter.disconnect();
       this.clearAuditSession();
+      this.localLLM.unloadSession();
       this.updateStatus('DISCONNECTED');
     } else {
       await this.adapter.connect();
@@ -170,6 +175,43 @@ export class AppController {
     this.setText('asset-audit-result', 'No inventory assessed.');
     this.setText('thermal-audit-result', 'Baseline not calibrated.');
     this.setText('gpio-monitor-status', 'No physical state sampled.');
+  }
+
+  async handleGgufFileSelected(event) {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    this.setText('model-loading-status', `Loading ${file.name}…`);
+    try {
+      await this.localLLM.loadModelFromBlob(file, (progress) => {
+        const percent = typeof progress === 'number' ? Math.round(progress * 100) : progress;
+        this.setText('model-loading-status', `Loading ${file.name}: ${percent ?? ''}%`);
+      });
+      this.setText('model-loading-status', `Loaded: ${file.name}`);
+      const panel = document.getElementById('llm-console-interface');
+      if (panel) { panel.classList.remove('disabled-panel'); panel.setAttribute('aria-disabled', 'false'); }
+    } catch (error) {
+      this.setText('model-loading-status', `Model load failed: ${error.message}`);
+    }
+  }
+
+  async handleLlmExecute() {
+    const input = document.getElementById('llm-command-input')?.value?.trim();
+    if (!input) return;
+    const log = document.getElementById('llm-output-log');
+    const appendLine = (text) => { if (log) { const line = document.createElement('div'); line.textContent = text; log.appendChild(line); } };
+    appendLine(`User: ${input}`);
+    try {
+      const result = await this.localLLM.executeUserCommand(input);
+      appendLine(`Model: ${result.response}`);
+      if (result.executed) {
+        appendLine(`[Tool: ${result.executed.action || 'none'} -> ${result.executed.status}]`);
+        await this.auditFirewall.logEvent('LLM_TOOL_RESULT', { action: result.executed.action, status: result.executed.status }).catch(() => {});
+      }
+    } catch (error) {
+      appendLine(`Error: ${error.message}`);
+    }
+    const commandInput = document.getElementById('llm-command-input');
+    if (commandInput) commandInput.value = '';
   }
 
   startPolling() {
