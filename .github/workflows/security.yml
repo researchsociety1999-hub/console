@@ -1,0 +1,34 @@
+name: Security Audit & Secret Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  audit:
+    name: Dependency Audit & Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Run npm audit
+        run: npm audit --omit=dev || true
+
+      - name: Check for Unintended Secrets or Credentials
+        run: |
+          if grep -riE "(AIzaSy|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36})" .; then
+            echo "ERROR: Potential API key or credential string detected!"
+            exit 1
+          fi
+          echo "Secret scanning completed without finding credentials."

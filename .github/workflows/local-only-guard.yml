@@ -1,0 +1,44 @@
+name: Local-Only Architecture Guard
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify-architecture:
+    name: Guardrail Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Check for Forbidden Files & Directories
+        run: |
+          FORBIDDEN_FILES=("js/agent.js" "supabase/functions/console-agent/index.ts")
+          for file in "${FORBIDDEN_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "ERROR: Forbidden legacy file re-introduced: $file"
+              exit 1
+            fi
+          done
+
+      - name: Verify Required Local Core Modules Exist
+        run: |
+          REQUIRED_FILES=("js/local-model.js" "js/data-firewall.js" "js/app.js" "vercel.json" "_headers")
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required local core module missing: $file"
+              exit 1
+            fi
+          done
+
+      - name: Scan Codebase for Forbidden Cloud Agent References
+        run: |
+          # Search for forbidden strings in tracking/source files
+          if grep -riE "(supabase\.co|SUPABASE_KEY|console-agent|js/agent\.js)" js/ index.html; then
+            echo "ERROR: Forbidden Cloud Agent or Supabase reference found in source files!"
+            exit 1
+          fi
+          echo "Architecture guardrail verification passed successfully."

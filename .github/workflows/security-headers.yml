@@ -1,0 +1,30 @@
+name: Security Header Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-headers:
+    name: Inspect CSP and Deployment Headers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Verify Security Configuration Files Exist
+        run: |
+          if [ ! -f "vercel.json" ] || [ ! -f "_headers" ]; then
+            echo "ERROR: vercel.json or _headers security file missing!"
+            exit 1
+          fi
+
+      - name: Check for Critical Security Headers
+        run: |
+          grep -q "X-Frame-Options" vercel.json || (echo "Missing X-Frame-Options in vercel.json" && exit 1)
+          grep -q "X-Content-Type-Options" vercel.json || (echo "Missing X-Content-Type-Options in vercel.json" && exit 1)
+          grep -q "Content-Security-Policy" vercel.json || (echo "Missing CSP in vercel.json" && exit 1)
+          grep -q "Content-Security-Policy" _headers || (echo "Missing CSP in _headers" && exit 1)
+          echo "Security header validation passed."
