@@ -1,282 +1,105 @@
-import jokerAdapter from "./joker-adapter.js";
-
-const MODULE_SCHEMA = {
-  wifi:    { accessPoints: "number", frameRate: "number" },
-  ble:     { devices: "number", visibleIds: "array" },
-  nfc:     { eventsLast5Min: "number" },
-  gpio:    { pins: "array" },
-  rgb:     { mode: "string", color: "string" },
-  buzzer:  { freq: "number", duration: "number" },
-  storage: { usedBytes: "number", freeBytes: "number" },
-  badusb:  { status: "string" },
-  thermal: { temperatureC: "number" }
-};
-
-function validateModulePacket(packet) {
-  if (!packet || typeof packet !== "object") return false;
-  if (!packet.source_module || !MODULE_SCHEMA[packet.source_module]) return false;
-  if (typeof packet.ok !== "boolean") return false;
-  if (packet.data_quality !== "OK" && packet.data_quality !== "DEGRADED") return false;
-  if (!Number.isFinite(packet.timestamp) || packet.timestamp < 1e12 || packet.timestamp > Date.now() + 60000) return false;
-  return true;
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
 }
 
-function sanitizeValue(moduleName, value) {
-  const schema = MODULE_SCHEMA[moduleName];
-  if (!schema || !value || typeof value !== "object") return value;
-  const clean = {};
-  for (const [key, expectedType] of Object.entries(schema)) {
-    if (key in value && typeof value[key] === expectedType) {
-      clean[key] = value[key];
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(value);
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  let hash = 2166136261;
+  for (const byte of bytes) { hash ^= byte; hash = Math.imul(hash, 16777619); }
+  return `local-fallback-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export class DataFirewall {
+  constructor() { this.alerts = []; }
+
+  generateAlert(telemetry) {
+    const alerts = [];
+    if (telemetry.thermal > 40.0) alerts.push({ level: 'CRITICAL', type: 'THERMAL_EXCEEDED', value: telemetry.thermal });
+    if (telemetry.nfc && telemetry.nfc.eventsLast5Min > 10) alerts.push({ level: 'HIGH', type: 'NFC_BURST', value: telemetry.nfc.eventsLast5Min });
+    this.alerts.push(...alerts);
+    return alerts;
+  }
+}
+
+export class SecurityAuditFirewall extends DataFirewall {
+  constructor({ vault = null, expectedPin = null } = {}) {
+    super();
+    this.vault = vault;
+    this.expectedPin = expectedPin;
+    this.authorized = false;
+    this.authorizationReference = null;
+    this.auditLog = [];
+    this.previousHash = 'GENESIS';
+    this.transientKey = null;
+  }
+
+  sanitizeMetadata(value) {
+    const secretPattern = /(pin|pass(word|phrase)?|secret|token|credential|key|payload|uid|card.?data)/i;
+    if (Array.isArray(value)) return value.map((item) => this.sanitizeMetadata(item));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, secretPattern.test(key) ? '[REDACTED]' : this.sanitizeMetadata(item)]));
     }
+    if (typeof value === 'string' && value.length > 512) return '[TRUNCATED]';
+    return value;
   }
-  return clean;
-}
 
-const SOURCE_REPUTATION = {
-  wifi: 0.85, ble: 0.9, nfc: 0.95, gpio: 1.0, rgb: 1.0,
-  buzzer: 1.0, storage: 0.9, badusb: 0.7, thermal: 0.95
-};
+  async verifyAuthorization(authTicket, adminPIN, acknowledged = false) {
+    const ticket = String(authTicket || '').trim();
+    const pin = String(adminPIN || '');
+    const validTicket = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(ticket);
+    const validPin = pin.length >= 6 && pin.length <= 256 && (!this.expectedPin || pin === this.expectedPin);
+    if (!acknowledged || !validTicket || !validPin) return { authorized: false, reason: 'A valid local ticket, passphrase, and acknowledgment are required.' };
+    this.authorized = true;
+    this.authorizationReference = ticket;
+    this.transientKey = await sha256(`${ticket}:${Date.now()}:${Math.random()}`);
+    await this.logEvent('SESSION_START', { acknowledgment: true, authorizationTicket: ticket });
+    return { authorized: true, reference: ticket };
+  }
 
-function computeTrustScore(packet) {
-  const base = SOURCE_REPUTATION[packet.source_module] ?? 0.5;
-  const quality = packet.data_quality === "OK" ? 1.0 : 0.6;
-  const freshness = Math.max(0, 1 - (Date.now() - packet.timestamp) / 30000);
-  return Math.round(base * quality * freshness * 100) / 100;
-}
-
-export const CARD_STATE = {
-  ONLINE: "ONLINE", DEGRADED: "DEGRADED", OFFLINE: "OFFLINE",
-  GHOST: "GHOST", MANIFESTED: "MANIFESTED", LOST: "LOST"
-};
-
-function deriveCardState(validatedPackets) {
-  if (validatedPackets.length === 0) return CARD_STATE.OFFLINE;
-  const degradedCount = validatedPackets.filter(p => p.trust < 0.5).length;
-  if (degradedCount / validatedPackets.length > 0.5) return CARD_STATE.DEGRADED;
-  const hasCriticalThermal = validatedPackets.some(
-    p => p.source_module === "thermal" && typeof p.value?.temperatureC === "number" && p.value.temperatureC > 85
-  );
-  if (hasCriticalThermal) return CARD_STATE.LOST;
-  return CARD_STATE.ONLINE;
-}
-
-export const APPROVED_ACTIONS = [
-  "RGB_MODE", "BUZZER_TONE", "GPIO_SET", "STEALTH_MODE", "MODULE_RESTART", "QUICK_HACK"
-];
-
-function isActionApproved(action) {
-  return APPROVED_ACTIONS.includes(action);
-}
-
-const DETERMINISTIC_FALLBACK_RECOMMENDATION = "Monitor Trend";
-const BAD_QUALITY_TEMP_THRESHOLD_C = 35;
-
-/**
- * Main ingress pipeline for a single raw telemetry packet. Synchronous and
- * fast on purpose — this is the real-time validation hot path and must not
- * block on network/model calls. Optionally accepts deviceContext to gate
- * telemetry when the console isn't connected to a trusted device profile.
- *
- * HARD STOP: if the adapter reports the device is powered off/isolated,
- * no packet passes through — system is forced OFFLINE regardless of
- * whatever sensor readings might otherwise say.
- */
-export function runDataFirewall(rawPacket, deviceContext = {}) {
-  if (deviceContext && Object.prototype.hasOwnProperty.call(deviceContext, "connected") && !deviceContext.connected) {
-    return {
-      input: rawPacket,
-      trusted: null,
-      context: { state: CARD_STATE.OFFLINE, reason: "DEVICE_NOT_CONNECTED" },
-      alert: {
-        type: "DEVICE_NOT_CONNECTED",
-        severity: "WARN",
-        source: "firewall",
-        predicted_state: "OFFLINE",
-        recommendation: "CONNECT_DEVICE_PROFILE",
-        is_critical_leak: false,
-        createdAt: Date.now()
-      }
+  async logEvent(action, data = {}) {
+    if (!this.authorized && action !== 'SESSION_START') throw new Error('Audit session is locked. Verify authorization first.');
+    const entry = {
+      timestamp: new Date().toISOString(),
+      action: String(action || 'UNSPECIFIED').replace(/[^A-Z0-9_:-]/gi, '_').slice(0, 96),
+      authorizationReference: this.authorizationReference,
+      metadata: this.sanitizeMetadata(data),
+      previousHash: this.previousHash
     };
+    entry.integrityHash = await sha256(stableStringify(entry));
+    this.previousHash = entry.integrityHash;
+    this.auditLog.push(entry);
+    if (this.vault?.isUnlocked && typeof this.vault.store === 'function') await this.vault.store({ type: 'AUDIT_EVENT', ...entry });
+    return entry;
   }
 
-  if (jokerAdapter.isDevicePoweredOff?.()) {
-    return {
-      input: null,
-      trusted: null,
-      context: { state: CARD_STATE.OFFLINE, reason: "DEVICE_POWERED_OFF" },
-      alert: {
-        type: "POWER_LOSS",
-        severity: "critical",
-        source: "adapter",
-        predicted_state: "OFFLINE",
-        recommendation: "RECONNECT_DEVICE_WHEN_READY",
-        is_critical_leak: true,
-        createdAt: Date.now()
-      }
+  async generateComplianceReport() {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      localOnly: true,
+      authorizationReference: this.authorizationReference,
+      eventCount: this.auditLog.length,
+      controls: {
+        iso27001: ['A.5.15 Access control', 'A.5.24 Information security incident management', 'A.7.5 Physical security monitoring', 'A.8.9 Configuration management'],
+        nist80053: ['AC-3 Access Enforcement', 'AU-2 Event Logging', 'AU-9 Protection of Audit Information', 'PE-3 Physical Access Control', 'SI-4 System Monitoring']
+      },
+      events: this.auditLog.map((entry) => ({ ...entry })),
+      exclusions: ['No network discovery', 'No credential probing', 'No card writing or cloning', 'No relay simulation', 'No Wiegand payload capture']
     };
+    report.integrityHash = await sha256(stableStringify(report));
+    return report;
   }
 
-  if (!validateModulePacket(rawPacket)) {
-    return {
-      input: { ...rawPacket, _invalid: true },
-      trusted: { score: 0, reason: "SCHEMA_VALIDATION_FAILED" },
-      context: { state: CARD_STATE.OFFLINE, reason: "INVALID_PACKET" },
-      alert: {
-        type: "TELEMETRY_INVALID",
-        severity: "WARN",
-        source: "firewall",
-        predicted_state: "OFFLINE",
-        recommendation: "CHECK_FIRMWARE_SCHEMA",
-        is_critical_leak: false,
-        createdAt: Date.now()
-      }
-    };
-  }
-
-  const sanitized = { ...rawPacket, value: sanitizeValue(rawPacket.source_module, rawPacket.value) };
-  const trust = computeTrustScore(sanitized);
-
-  return {
-    input: sanitized,
-    trusted: { ...sanitized, trust },
-    context: null,
-    alert: trust < 0.3 ? {
-      type: "TRUST_DEGRADED",
-      severity: "WARN",
-      source: "firewall",
-      predicted_state: "DEGRADED",
-      recommendation: "INSPECT_MODULE_HEALTH",
-      is_critical_leak: false,
-      createdAt: Date.now()
-    } : null
-  };
-}
-
-export function finalizeContext(validatedPackets) {
-  const state = deriveCardState(validatedPackets);
-  return { state, modules: validatedPackets.map(p => p.trusted), timestamp: Date.now() };
-}
-
-/**
- * Extracts a temperature reading (Celsius) from a telemetry snapshot in
- * whatever reasonable shape it arrives — a raw module packet, a trusted
- * packet, a sensor-fusion payload (telemetry.js's synthesizeSensorFusion),
- * or a plain { value: number } shape. Returns null if none is found.
- */
-function extractTemperatureC(telemetrySnapshot) {
-  if (!telemetrySnapshot || typeof telemetrySnapshot !== "object") return null;
-
-  const candidates = [
-    telemetrySnapshot.temperatureC,
-    telemetrySnapshot.tempC,
-    telemetrySnapshot.value?.temperatureC,
-    telemetrySnapshot.value?.tempC,
-    typeof telemetrySnapshot.value === "number" ? telemetrySnapshot.value : null,
-    telemetrySnapshot.sensorData?.tempC,
-    telemetrySnapshot.sensorData?.temperatureC
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
-  }
-  return null;
-}
-
-function hasBadDataQuality(telemetrySnapshot) {
-  if (!telemetrySnapshot || typeof telemetrySnapshot !== "object") return false;
-  const quality = telemetrySnapshot.data_quality;
-  return quality === "BAD" || quality === "DEGRADED";
-}
-
-/**
- * AI-enriched alert generation. This is deliberately SEPARATE from
- * runDataFirewall()'s synchronous hot path — it's an async, best-effort
- * enrichment step that callers (Watchdog, app.js) can invoke when they
- * want an AI-generated recommendation and predicted_state attached to an
- * alert, without ever blocking real-time packet validation on an LLM call.
- *
- * Security gate: if the model returns an empty/unusable recommendation,
- * this falls back to a deterministic "Monitor Trend" recommendation so the
- * UI never receives an empty AlertData.recommendation field.
- *
- * Sensor-driven critical override: independent of what the AI or the base
- * alert says, if the raw SensorData itself reports data_quality "BAD" (or
- * "DEGRADED") together with a temperature reading over 35°C, this function
- * forces is_critical_leak: true and severity: "critical" so the full-screen
- * red overlay is always triggered for that condition.
- *
- * @param {object} baseAlert - a deterministic alert object (from
- *   runDataFirewall's alert, or one synthesized by Watchdog) that already
- *   has at least { type, severity, is_critical_leak }.
- * @param {object} telemetrySnapshot - raw/trusted telemetry to ground the
- *   model's reasoning (kept small — pass a summary, not the full history).
- * @param {object} [localModel] - a LocalModelRuntime instance (or
- *   compatible object exposing runInference(prompt, {contextSummary})).
- *   If omitted or inference fails, the deterministic fallback is used.
- */
-export async function generateAlert(baseAlert, telemetrySnapshot, localModel = null) {
-  const alert = { ...baseAlert, createdAt: baseAlert.createdAt || Date.now() };
-
-  if (!localModel || typeof localModel.runInference !== "function") {
-    alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
-    alert.predicted_state = alert.predicted_state || "NOMINAL";
-  } else {
-    try {
-      const contextSummary = typeof telemetrySnapshot === "string" ? telemetrySnapshot : JSON.stringify(telemetrySnapshot ?? {});
-      const raw = await localModel.runInference(
-        "Given this telemetry, respond with a single line: 'PREDICTED_STATE: <state> | RECOMMENDATION: <short action>'.",
-        { contextSummary }
-      );
-
-      const predictedMatch = /PREDICTED_STATE:\s*([^|]+)/i.exec(raw || "");
-      const recommendationMatch = /RECOMMENDATION:\s*(.+)$/i.exec(raw || "");
-
-      const aiPredictedState = predictedMatch ? predictedMatch[1].trim() : "";
-      const aiRecommendation = recommendationMatch ? recommendationMatch[1].trim() : (raw || "").trim();
-
-      alert.predicted_state = aiPredictedState || alert.predicted_state || "NOMINAL";
-      alert.recommendation = aiRecommendation || alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
-      alert.recommendationSource = "ai";
-    } catch {
-      alert.recommendation = alert.recommendation || DETERMINISTIC_FALLBACK_RECOMMENDATION;
-      alert.predicted_state = alert.predicted_state || "NOMINAL";
-      alert.recommendationSource = "deterministic_fallback";
-    }
-  }
-
-  if (!alert.recommendation || !alert.recommendation.trim()) {
-    alert.recommendation = DETERMINISTIC_FALLBACK_RECOMMENDATION;
-  }
-
-  // Sensor-driven critical override — takes priority over the AI's opinion.
-  const temperatureC = extractTemperatureC(telemetrySnapshot);
-  if (hasBadDataQuality(telemetrySnapshot) && temperatureC !== null && temperatureC > BAD_QUALITY_TEMP_THRESHOLD_C) {
-    alert.is_critical_leak = true;
-    alert.severity = "critical";
-    alert.predicted_state = "CRITICAL";
-    alert.sensorOverride = true;
-    alert.recommendation = alert.recommendation === DETERMINISTIC_FALLBACK_RECOMMENDATION
-      ? "Inspect thermal sensor immediately — degraded data quality above 35\u00b0C"
-      : alert.recommendation;
-  }
-
-  return alert;
-}
-
-export async function dispatchApprovedCommand(adapter, action, payload) {
-  if (!isActionApproved(action)) {
-    throw new Error(`Action ${action} is not in the approved command list`);
-  }
-  switch (action) {
-    case "RGB_MODE": return adapter.setRgbMode(payload.mode);
-    case "BUZZER_TONE": return adapter.sendBuzzerTone(payload.freq, payload.duration);
-    case "GPIO_SET": return adapter.setGpioPin(payload.pin, payload.value);
-    case "STEALTH_MODE": return adapter.setStealthMode(payload.enabled);
-    case "MODULE_RESTART": return adapter.restartModule(payload.module);
-    case "QUICK_HACK": return adapter.runQuickHack(payload.label);
-    default: throw new Error(`Unhandled approved action: ${action}`);
+  sessionClear() {
+    this.authorized = false;
+    this.authorizationReference = null;
+    this.auditLog = [];
+    this.previousHash = 'GENESIS';
+    this.transientKey = null;
   }
 }
-
-export { validateModulePacket, sanitizeValue, computeTrustScore, deriveCardState, isActionApproved };

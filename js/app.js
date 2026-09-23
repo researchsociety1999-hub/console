@@ -1,67 +1,198 @@
-import { ConsoleStateMachine, STATES } from "./state-machine.js";
-import { JokerAdapter } from "./joker-adapter.js";
-import { Watchdog } from "./watchdog.js";
-import { Vault } from "./storage.js";
-import { appendLog, escapeHtml, renderModuleGrid } from "./ui.js";
-import { LocalModelRuntime, CURATED_MODELS } from "./local-model.js";
-import { generateAlert } from "./data-firewall.js";
-import { renderModuleDetailHtml } from "./module-detail.js";
-import { HARDWARE_MODULES, synthesizeSensorFusion } from "./telemetry.js";
+import { JokerAdapter } from './joker-adapter.js';
+import { DataFirewall, SecurityAuditFirewall } from './data-firewall.js';
+import { LocalModelRuntime } from './local-model.js';
+import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from './security-audit-suite.js';
 
-const root = document.getElementById("app");
-const logEl = document.getElementById("log");
-const SESSION_KEY = "console-session-v3";
-const history = safeParseJSON(sessionStorage.getItem(SESSION_KEY))?.history || [];
-function safeParseJSON(raw) { try { return JSON.parse(raw); } catch { return null; } }
-const state = { thermal: null, aps: 0, ble: 0, nfcEvents: 0, recentAlerts: [], preferLocal: true, stealthMode: false, lastModuleSamples: [], predictedState: "NOMINAL", recommendation: "Monitor Trend", thermalTrend: "stable", lastSampleAt: 0, processingAlert: false };
-const adapter = new JokerAdapter();
-const vault = new Vault();
-const localModel = new LocalModelRuntime();
-let activeModule = null;
-const actionQueue = [];
-const sm = new ConsoleStateMachine((next, previous) => { if (next === STATES.LOST && (previous === STATES.MANIFESTED || previous === STATES.GHOST)) eraseRecentSessionMemory(); render(); });
-const MODULES = [{ id:"nfc", name:"NFC / RFID", description:"PN532 · 13.56 MHz · read/write" },{ id:"wifi", name:"WiFi Lab", description:"Passive survey · observe-only" },{ id:"ble", name:"Bluetooth LE", description:"Scanner · RSSI · service hints" },{ id:"badusb", name:"BadUSB (HID)", description:"Confirmation-gated payloads" },{ id:"gpio", name:"GPIO Lab", description:"14-pin header · HIGH/LOW" },{ id:"rgb", name:"RGB Aura", description:"WS2812B effects & brightness" },{ id:"buzzer", name:"Buzzer", description:"Tones · melodies · alerts" },{ id:"storage", name:"Storage", description:"Vault · dumps · logs" },{ id:"console", name:"Console", description:"Session terminal · live log" },{ id:"settings", name:"Settings", description:"Transport · vault · safety" }];
-const severityTheme = { low:["#3cf2ec","rgba(60,242,236,.28)"], medium:["#ffc857","rgba(255,200,87,.30)"], high:["#ff9a5a","rgba(255,154,90,.32)"], critical:["#ff4f66","rgba(255,79,102,.38)"] };
-function persistSession() { try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ history:history.slice(0,150) })); } catch {} }
-function log(message, level="INFO") { appendLog(logEl, history, message, level); persistSession(); }
-if (history.length) logEl.innerHTML = history.map((x) => `<div><time>${escapeHtml(x.t || "")}</time>[${escapeHtml(x.level || "INFO")}] ${escapeHtml(x.msg || "")}</div>`).join("");
-function setText(id,value) { const el=document.getElementById(id); if(el) el.textContent=value; }
-function setSeverityTheme(severity="low") { const [color,glow]=severityTheme[String(severity).toLowerCase()] || severityTheme.low; document.documentElement.style.setProperty("--sev-color",color); document.documentElement.style.setProperty("--sev-glow",glow); }
-function pulsePipeline() { ["input","trust","context","action"].forEach((stage,index)=>setTimeout(()=>{const el=document.querySelector(`.pipeline-stage[data-stage="${stage}"]`); if(!el)return; el.classList.add("active"); setTimeout(()=>el.classList.remove("active"),650);},index*150)); }
-function showAiActingToast(message="AI Acting…") { const box=document.getElementById("ai-toast-container"); if(!box)return; box.replaceChildren(); const toast=document.createElement("div"); toast.className="ai-acting-toast visible"; toast.innerHTML=`<span class="spinner"></span><span>${escapeHtml(message)}</span>`; box.append(toast); setTimeout(()=>toast.classList.remove("visible"),1400); setTimeout(()=>toast.remove(),1650); }
-function updatePredictedBadge(predictedState) { const value=predictedState||"NOMINAL"; setText("predictedStateBadgeText",value); setText("predictedState",value); const action=document.getElementById("connect"); if(action) action.dataset.predictedState=value; }
-function updateAiBadge() { const badge=document.getElementById("aiAgentActiveBadge"); if(badge) badge.classList.toggle("visible",sm.state===STATES.MANIFESTED && localModel.loaded); }
-function render() { root.classList.remove("lost","ghost","manifested"); root.classList.add(sm.state); setText("stateText",sm.state===STATES.MANIFESTED?"MANIFESTED / TRUSTED":sm.state===STATES.GHOST?"GHOST / LISTENING":"LINK LOST"); setText("ribbon",sm.state===STATES.MANIFESTED?"STATUS RIBBON // LOCAL WATCHDOG ACTIVE":sm.state===STATES.GHOST?"GHOST PROTOCOL // LISTENING — TAP CONNECT TO WAKE":"STATUS RIBBON // DEVICE LINK LOST"); setText("tempValue",Number.isFinite(state.thermal)?`${state.thermal.toFixed(1)}°C`:"--"); setText("devices",String(state.ble)); setText("trust",sm.state===STATES.MANIFESTED?"98%":"--"); setText("aps",String(state.aps)); setText("ble",`${state.ble} devices`); setText("nfcEvents",String(state.nfcEvents)); setText("thermalTrend",state.thermalTrend); setText("recommendation",state.recommendation); const trend=document.getElementById("trendArrow"); if(trend){trend.className=state.thermalTrend;trend.textContent=state.thermalTrend==="rising"?"▲":state.thermalTrend==="falling"?"▼":"—";} const alert=document.getElementById("alert"); if(alert){const latest=state.recentAlerts[0];alert.textContent=latest?latest.type:"NO ACTIVE ALERTS";alert.className=`severity ${latest?.severity||"low"}`;} setText("vault",vault.isUnlocked?"UNLOCKED / ENCRYPTED (AES-256-GCM)":"LOCKED / ENCRYPTED (AES-256-GCM)"); setText("intelSource",localModel.loaded?`LOCAL AI: ${localModel.loadingModelName}`:"LOCAL MODEL STANDBY"); setText("bridgeHardware",adapter.connectionProfile?.boardType||"SGP Joker Card"); setText("bridgeTransport",adapter.connected?`Connected (${adapter.transport})`:adapter.isDevicePoweredOff?"Isolated / Powered Off":"Disconnected"); setText("bridgeModuleCount",`${state.lastModuleSamples.filter((sample)=>sample.data_quality==="OK").length} / ${HARDWARE_MODULES.length}`); document.body.classList.toggle("stealth-mode",adapter.isStealthModeActive); const stealth=document.getElementById("stealthToggle"); if(stealth){stealth.classList.toggle("active",adapter.isStealthModeActive);stealth.textContent=adapter.isStealthModeActive?"STEALTH: ON":"STEALTH: OFF";} setText("dataFreshness",state.lastSampleAt?`${Math.max(0,Math.round((Date.now()-state.lastSampleAt)/1000))}s ago`:"Waiting"); updatePredictedBadge(state.predictedState); updateAiBadge(); if(activeModule)renderActiveModuleDetail(); persistSession(); }
-function buildLocalContext() { const fusion=synthesizeSensorFusion({tempC:state.thermal??0,bleDeviceCount:state.ble}); return JSON.stringify({state:sm.state,aps:state.aps,ble:state.ble,nfcEvents:state.nfcEvents,trend:state.thermalTrend,fusion:fusion.sensorData}); }
-async function enrichAlert(baseAlert) { return generateAlert(baseAlert,synthesizeSensorFusion({tempC:state.thermal??0,bleDeviceCount:state.ble}),localModel); }
-async function handleAlertCascade(rawAlert) { if(!rawAlert||state.processingAlert)return; state.processingAlert=true; try { const alert=await enrichAlert(rawAlert); state.recentAlerts.unshift(alert); state.recentAlerts=state.recentAlerts.slice(0,30); state.predictedState=alert.predicted_state||"NOMINAL"; state.recommendation=alert.recommendation||"Monitor Trend"; state.thermalTrend=alert.trend||state.thermalTrend; setSeverityTheme(alert.severity); document.body.classList.toggle("critical-leak",Boolean(alert.is_critical_leak)); pulsePipeline(); if(alert.is_critical_leak||alert.type==="NEW_BLE_DEVICE"){if(sm.state!==STATES.MANIFESTED)sm.manifest(); if(!adapter.isStealthModeActive&&document.getElementById("buzzerToggle")?.checked)playBeep(alert.severity==="critical"?1200:800,180);} if(vault.isUnlocked)await vault.store(alert); await routeRecommendation(alert); render(); } finally { state.processingAlert=false; } }
-async function routeRecommendation(alert) { const recommendation=alert.recommendation||"Monitor Trend"; if(recommendation.startsWith("RESTART_MODULE:")){showAiActingToast("Restarting module…");const moduleName=recommendation.split(":")[1];const result=await adapter.restartModule(moduleName);pushActionQueue(`Restart ${moduleName}`,result.recovered?"recovered":"unresolved");}else if(/cooling diagnostic/i.test(recommendation)){showAiActingToast("Applying diagnostic signal…");await adapter.setRgbMode("alert-sweep");await adapter.sendBuzzerTone(1200,180);pushActionQueue("Cooling diagnostic","triggered");}else pushActionQueue(alert.type,"monitored"); }
-function playBeep(freq=880,duration=160){try{const ctx=new(window.AudioContext||window.webkitAudioContext)();const osc=ctx.createOscillator();const gain=ctx.createGain();osc.frequency.value=freq;gain.gain.value=.04;osc.connect(gain).connect(ctx.destination);osc.start();setTimeout(()=>{osc.stop();ctx.close();},duration);}catch{}}
-function pushActionQueue(label,status){actionQueue.unshift({label,status,at:new Date().toLocaleTimeString()});const el=document.getElementById("actionQueue");if(el)el.innerHTML=actionQueue.slice(0,8).map((item)=>`<div class="qi"><b>${escapeHtml(item.label)}</b> — ${escapeHtml(item.status)} <span style="float:right;color:#587278;">${escapeHtml(item.at)}</span></div>`).join("");}
-async function eraseRecentSessionMemory(){try{await vault.clearRecentRecords(5*60*1000);await vault.clearCurrentSensorSnapshot();}catch{} history.splice(0,history.length);state.recentAlerts=[];state.lastModuleSamples=[];state.thermal=null;sessionStorage.removeItem(SESSION_KEY);}
-function renderActiveModuleDetail(){const mod=MODULES.find((item)=>item.id===activeModule);const title=document.getElementById("moduleDetailTitle");const body=document.getElementById("moduleDetailBody");if(!mod||!title||!body)return;title.textContent=`Module Detail · ${mod.name}`;body.innerHTML=renderModuleDetailHtml(activeModule,state);body.querySelectorAll("[data-action]").forEach((button)=>button.addEventListener("click",()=>moduleAction(button.dataset)));}
-async function moduleAction(data){if(sm.state!==STATES.MANIFESTED){log("Wake and connect the device before issuing actions.","WARN");return;}try{if(data.action==="rescan")return sampleNow();if(data.action==="restart-module"){showAiActingToast("Restarting module…");const result=await adapter.restartModule(data.module||activeModule);log(`Restart ${data.module}: ${result.status}`,"ACTION");return;}if(data.action==="gpio"){showAiActingToast("Setting GPIO…");await adapter.setGpioPin(Number(data.pin),data.value||"HIGH");return;}if(data.action==="rgb"){showAiActingToast("Updating RGB…");await adapter.setRgbMode(data.effect);return;}if(data.action==="buzzer-test"){showAiActingToast("Testing buzzer…");await adapter.sendBuzzerTone();return;}if(data.action==="hack"){if(!confirm(`Confirm authorized action: ${data.label}?`))return;await runCommand(data.label);}}catch(error){log(error.message||String(error),"ERROR");}}
-async function runCommand(label){if(sm.state!==STATES.MANIFESTED)return;showAiActingToast("AI Acting…");try{const result=await adapter.runQuickHack(label);pushActionQueue(label,result.status);log(`${label} — ${result.status}`,"ACTION");}catch(error){log(error.message||String(error),"ERROR");}}
-function readProfile(){return{transport:document.getElementById("transportSelect").value,boardType:document.getElementById("boardTypeSelect").value,deviceName:document.getElementById("deviceNameInput").value.trim()||"SGP Joker Card",endpointUrl:document.getElementById("endpointUrlInput").value.trim(),wifiSsid:document.getElementById("wifiSsidInput").value.trim(),wifiPassword:document.getElementById("wifiPasswordInput").value};}
-async function manifest(){const profile=readProfile();adapter.setProfile(profile);adapter.setMode(profile.transport);const connection=await adapter.connect();sm.manifest();log(`Connected via ${connection.transport}.`,"SECURE");await sampleNow();render();return connection;}
-async function sampleNow(){const sample=adapter.sample();if(!sample)return;state.thermal=sample.thermal;state.aps=sample.wifi.accessPoints;state.ble=sample.ble.devices;state.nfcEvents=sample.nfc.eventsLast5Min;state.lastSampleAt=Date.now();state.lastModuleSamples=adapter.sampleAllModules();render();}
-const watchdog=new Watchdog({intervalMs:15000,isActive:()=>sm.state===STATES.MANIFESTED&&!adapter.isDevicePoweredOff(),getThermalSample:()=>{const sample=adapter.sample();if(!sample)return null;state.thermal=sample.thermal;state.aps=sample.wifi.accessPoints;state.ble=sample.ble.devices;state.nfcEvents=sample.nfc.eventsLast5Min;state.lastSampleAt=Date.now();return sample.thermal;},getModuleSamples:()=>{const samples=adapter.sampleAllModules();state.lastModuleSamples=samples;return samples;},onAlert:(alert)=>handleAlertCascade(alert)});
-function bind(id,event,handler){const el=document.getElementById(id);if(el)el.addEventListener(event,handler);}
-bind("connect","click",()=>manifest().catch((error)=>log(error.message||String(error),"ERROR")));
-bind("ghost","click",()=>{if(sm.state===STATES.MANIFESTED){sm.enterGhost();log("Ghost Protocol enabled.","SECURE");}else log("Connect Joker to wake from Ghost mode.","WARN");});
-bind("stateBtn","click",()=>{adapter.disconnect();sm.sever();log("Device link severed.","WARN");});
-bind("stealthToggle","click",async()=>{await adapter.setStealthMode(!adapter.isStealthModeActive);if(adapter.isStealthModeActive&&sm.state===STATES.MANIFESTED)sm.enterGhost();render();});
-bind("diagnostic","click",()=>runCommand("Cooling Diagnostic"));
-bind("applyConnectionProfile","click",()=>{adapter.setProfile(readProfile());const check=adapter.validateConnectionProfile();log(check.valid?"Connection profile applied.":check.warnings[0],check.valid?"SECURE":"WARN");});
-bind("killDeviceToggle","click",async()=>{if(!confirm("Isolate device into deep sleep?"))return;const result=await adapter.killDevice({confirmed:true});await handleAlertCascade(result.alert);sm.sever();});
-bind("unlockVault","click",async()=>{const pass=document.getElementById("vaultPass").value;if(!pass)return log("Enter a vault passphrase.","WARN");await vault.unlock(pass);render();});
-bind("exportIntel","click",async()=>{if(!vault.isUnlocked)return log("Unlock the vault before export.","WARN");const records=await vault.exportAll();const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(records,null,2)],{type:"application/json"}));a.download=`console-vault-${Date.now()}.json`;a.click();URL.revokeObjectURL(a.href);});
-bind("clearVault","click",async()=>{if(confirm("Clear encrypted local vault history?"))await vault.clearAll();});
-bind("loadCustomModel","click",()=>loadLocalModel(document.getElementById("customRepo").value.trim(),document.getElementById("customFile").value.trim(),"Custom GGUF"));
-bind("unloadModel","click",async()=>{await localModel.unload();render();});
-bind("preferLocalToggle","change",(event)=>{state.preferLocal=event.target.checked;});
-document.querySelectorAll("[data-command]").forEach((button)=>button.addEventListener("click",()=>{if(confirm(`Confirm authorized command: ${button.dataset.command}?`))runCommand(button.dataset.command);}));
-document.getElementById("chat")?.addEventListener("submit",async(event)=>{event.preventDefault();const input=document.getElementById("question");const question=input.value.trim();if(!question)return;if(!localModel.loaded){setText("agent","Load a local model to query telemetry.");return;}showAiActingToast("Local AI reasoning…");try{setText("agent",await localModel.runInference(question,{contextSummary:buildLocalContext()}));}catch(error){setText("agent",`Local inference unavailable: ${error.message||error}`);}input.value="";});
-const moduleGrid=document.getElementById("moduleGrid");function selectModule(id){activeModule=id;renderModuleGrid(moduleGrid,MODULES,activeModule,selectModule);renderActiveModuleDetail();}renderModuleGrid(moduleGrid,MODULES,activeModule,selectModule);
-const curatedGrid=document.getElementById("curatedModelGrid");async function loadLocalModel(repo,file,label){if(!repo||!file)return log("Provide a GGUF repository and filename.","WARN");setText("modelStatus",`Loading ${label}…`);try{await localModel.loadFromHF(repo,file,(pct)=>setText("modelProgress",`${pct??0}%`));setText("modelStatus",`Loaded: ${label}`);setText("modelProgress","100%");render();}catch(error){setText("modelStatus",error.message||String(error));}}renderModuleGrid(curatedGrid,CURATED_MODELS.map((model)=>({id:model.id,name:model.name,description:`${model.size} · ${model.note}`})),null,(id)=>{const model=CURATED_MODELS.find((entry)=>entry.id===id);if(model)loadLocalModel(model.repo,model.file,model.name);});
-watchdog.start();log("Console initialized in local-only Ghost mode. Wake by connecting an authorized device.","SECURE");render();
+export class AppController {
+  constructor() {
+    this.adapter = new JokerAdapter();
+    this.firewall = new DataFirewall();
+    this.localModel = new LocalModelRuntime();
+    this.vaultUnlocked = false;
+    this.auditFirewall = new SecurityAuditFirewall({ vault: this.createLocalVaultBridge() });
+    this.nfcAuditor = new NFCSecurityAuditor();
+    this.thermalScanner = new TSCMThermalScanner();
+    this.gpioMonitor = new GPIOSecurityMonitor({ dataFirewall: this.auditFirewall });
+    this.assetAuditor = new OfflineAssetAuditor();
+    this.pollTimer = null;
+  }
+
+  createLocalVaultBridge() {
+    return {
+      get isUnlocked() { return false; },
+      store: async () => undefined
+    };
+  }
+
+  async init() {
+    this.bindEvents();
+    this.updateStatus('MANIFESTED / TRUSTED');
+    this.setAuditLocked(true, 'Locked: authorization required.');
+    window.addEventListener('pagehide', () => this.clearAuditSession());
+    window.addEventListener('beforeunload', () => this.clearAuditSession());
+  }
+
+  bindEvents() {
+    this.bind('connect-btn', 'click', () => this.handleConnect());
+    this.bind('vault-unlock-btn', 'click', () => this.handleVaultUnlock());
+    this.bind('verify-authorization-btn', 'click', () => this.verifyAuthorization());
+    this.bind('classify-nfc-btn', 'click', () => this.classifyNfc());
+    this.bind('assess-assets-btn', 'click', () => this.assessAssets());
+    this.bind('calibrate-thermal-btn', 'click', () => this.calibrateThermal());
+    this.bind('scan-thermal-btn', 'click', () => this.scanThermal());
+    this.bind('refresh-gpio-btn', 'click', () => this.refreshGpio());
+    this.bind('export-compliance-btn', 'click', () => this.exportComplianceReport());
+    this.bind('clear-audit-session-btn', 'click', () => this.clearAuditSession());
+  }
+
+  bind(id, event, handler) {
+    const element = document.getElementById(id);
+    if (element) element.addEventListener(event, handler);
+  }
+
+  async handleConnect() {
+    if (this.adapter.connected) {
+      await this.adapter.disconnect();
+      this.clearAuditSession();
+      this.updateStatus('DISCONNECTED');
+    } else {
+      await this.adapter.connect();
+      this.updateStatus('CONNECTED');
+      this.startPolling();
+    }
+  }
+
+  handleVaultUnlock() {
+    const pass = document.getElementById('vault-passphrase')?.value;
+    if (pass) {
+      this.vaultUnlocked = true;
+      const statusEl = document.getElementById('vault-status');
+      if (statusEl) statusEl.textContent = 'Unlocked (local session)';
+    }
+  }
+
+  async verifyAuthorization() {
+    const ticket = document.getElementById('auth-reference')?.value;
+    const pin = document.getElementById('admin-pin')?.value;
+    const acknowledged = Boolean(document.getElementById('research-ack')?.checked);
+    const result = await this.auditFirewall.verifyAuthorization(ticket, pin, acknowledged);
+    this.setAuditLocked(!result.authorized, result.authorized ? `Authorized locally for ${result.reference}.` : result.reason);
+    if (result.authorized) this.updateStatus('AUTHORIZED / LOCAL AUDIT ACTIVE');
+  }
+
+  setAuditLocked(locked, message) {
+    const panel = document.getElementById('audit-modules');
+    if (panel) { panel.classList.toggle('locked', locked); panel.setAttribute('aria-disabled', String(locked)); }
+    const status = document.getElementById('authorization-status');
+    if (status) status.textContent = message;
+  }
+
+  async withAudit(action) {
+    if (!this.auditFirewall.authorized) { this.setAuditLocked(true, 'Locked: verify local authorization first.'); return null; }
+    try { return await action(); } catch (error) { this.updateStatus(`AUDIT ERROR: ${error.message}`); return null; }
+  }
+
+  async classifyNfc() {
+    return this.withAudit(async () => {
+      const metadata = document.getElementById('nfc-technology')?.value || '';
+      const result = this.nfcAuditor.classify(metadata);
+      await this.auditFirewall.logEvent('NFC_CLASSIFICATION', { classification: result.classification, risk: result.risk, readOnly: true });
+      this.setText('nfc-audit-result', `${result.classification}: ${result.finding}`);
+      this.updateStatus('NFC TECHNOLOGY REVIEW COMPLETE');
+      return result;
+    });
+  }
+
+  async assessAssets() {
+    return this.withAudit(async () => {
+      const raw = document.getElementById('asset-inventory')?.value || '[]';
+      const result = this.assetAuditor.assess(JSON.parse(raw));
+      await this.auditFirewall.logEvent('ASSET_ASSESSMENT', { assetCount: result.assetCount, reviewRequired: result.reviewRequired });
+      this.setText('asset-audit-result', `Offline assessment complete: ${result.reviewRequired} of ${result.assetCount} assets require review.`);
+      return result;
+    });
+  }
+
+  async calibrateThermal() {
+    return this.withAudit(async () => {
+      const telemetry = await this.adapter.getSafeAuditTelemetry();
+      if (!telemetry) throw new Error('Connect local hardware before calibration.');
+      const baseline = this.thermalScanner.calibrate(telemetry.thermalGrid);
+      await this.auditFirewall.logEvent('THERMAL_BASELINE', { baseline: Number(baseline.toFixed(2)), sampleCount: telemetry.thermalGrid.length });
+      this.setText('thermal-audit-result', `Ambient baseline calibrated at ${baseline.toFixed(2)}°C.`);
+      return baseline;
+    });
+  }
+
+  async scanThermal() {
+    return this.withAudit(async () => {
+      const telemetry = await this.adapter.getSafeAuditTelemetry();
+      if (!telemetry) throw new Error('Connect local hardware before scanning.');
+      const threshold = Number(document.getElementById('thermal-threshold')?.value || 2.5);
+      const result = this.thermalScanner.scan(telemetry.thermalGrid, threshold);
+      this.thermalScanner.render(document.getElementById('thermal-display'), result);
+      await this.auditFirewall.logEvent('THERMAL_SCAN', { baseline: result.baseline, threshold: result.threshold, anomalyCount: result.anomalies.length });
+      this.setText('thermal-audit-result', `${result.status}: ${result.anomalies.length} local heat anomalies found.`);
+      this.updateStatus(result.status);
+      return result;
+    });
+  }
+
+  async refreshGpio() {
+    return this.withAudit(async () => {
+      const telemetry = await this.adapter.getSafeAuditTelemetry();
+      if (!telemetry) throw new Error('Connect local hardware before reading states.');
+      const result = await this.gpioMonitor.update(telemetry.gpio);
+      await this.auditFirewall.logEvent('GPIO_STATUS', { doorContact: result.doorContact, pirMotion: result.pirMotion, vibrationTamper: result.vibrationTamper, activityOnly: result.activity });
+      this.setText('gpio-monitor-status', `Door: ${result.doorContact ? 'closed' : 'open'} | PIR: ${result.pirMotion ? 'motion' : 'clear'} | Tamper: ${result.vibrationTamper ? 'alert' : 'clear'} | D0/D1 activity: ${result.activity.wiegandD0}/${result.activity.wiegandD1}`);
+      return result;
+    });
+  }
+
+  async exportComplianceReport() {
+    return this.withAudit(async () => {
+      const report = await this.auditFirewall.generateComplianceReport();
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `local-compliance-report-${Date.now()}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      this.updateStatus('LOCAL COMPLIANCE REPORT EXPORTED');
+      return report;
+    });
+  }
+
+  clearAuditSession() {
+    this.auditFirewall.sessionClear();
+    this.setAuditLocked(true, 'Audit session cleared locally.');
+    this.setText('nfc-audit-result', 'Awaiting authorized input.');
+    this.setText('asset-audit-result', 'No inventory assessed.');
+    this.setText('thermal-audit-result', 'Baseline not calibrated.');
+    this.setText('gpio-monitor-status', 'No physical state sampled.');
+  }
+
+  startPolling() {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = setInterval(async () => {
+      if (!this.adapter.connected) return;
+      const data = await this.adapter.sample();
+      if (data) { this.renderTelemetry(data); this.firewall.generateAlert(data); }
+    }, 2000);
+  }
+
+  renderTelemetry(data) {
+    this.setText('temp-val', data.thermal.toFixed(1));
+    this.setText('wifi-val', data.wifi.accessPoints);
+    this.setText('ble-val', data.ble.devices);
+    this.setText('nfc-val', data.nfc.eventsLast5Min);
+  }
+
+  setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }
+  updateStatus(status) { this.setText('predicted-state-badge', status); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const app = new AppController();
+  app.init();
+});

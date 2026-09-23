@@ -1,225 +1,101 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#091013" />
-  <meta name="description" content="Console — autonomous, local-first telemetry intelligence dashboard for the SGP Joker Card." />
-  <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="./assets/icon.svg" />
-  <title>Console</title>
-  <link rel="stylesheet" href="./css/tokens.css" />
-  <link rel="stylesheet" href="./css/app.css" />
-  <link rel="stylesheet" href="./css/states.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SGP Joker Card Console</title>
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <main class="app lost" id="app">
-    <header class="topbar">
-      <div class="brand">CONSOLE <small>// COGNITIVE CORE</small></div>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <button class="stealth-toggle" id="stealthToggle">STEALTH: OFF</button>
-        <button class="status" id="stateBtn"><i class="dot"></i><span id="stateText">LINK LOST</span></button>
+  <div id="app">
+    <header>
+      <h1>SGP Joker Card Console</h1>
+      <div id="status-ribbon">
+        <span id="predicted-state-badge">INITIALIZING</span>
+        <button id="connect-btn">Connect</button>
       </div>
     </header>
 
-    <div class="ribbon" id="ribbon">STATUS RIBBON // WAITING FOR SECURE JOKER LINK</div>
-
-    <!-- ================= DEFAULT VIEW: Console / Timeline ================= -->
-    <section class="hud" style="margin-bottom:14px;">
-      <article class="panel console">
-        <h2>Console / Trusted Event Feed &middot; Default View</h2>
-        <div class="log" id="log" aria-live="polite"></div>
-        <form class="chat" id="chat">
-          <input id="question" autocomplete="off" placeholder="Ask Console about the live environment&hellip;" />
-          <button class="btn">Ask Agent</button>
-        </form>
-        <div class="answer" id="agent" aria-live="polite">Agent standby. Connect a trusted Joker Card to begin contextual monitoring.</div>
-        <p class="consent-note">Session store: raw chronological data flow survives a page refresh in this browser tab (sessionStorage), and clears when the tab closes. This is the default landing view.</p>
-      </article>
-    </section>
-
-    <!-- ================= 8-PANEL HUD ================= -->
-    <section class="hud">
-      <article class="panel radar">
-        <h2><span class="hud-index">01</span>Proximity Radar / NFC</h2>
-        <div class="radar-face" id="radarFace"><i class="blip" id="blipPrimary"></i></div>
-      </article>
-
-      <article class="panel signals">
-        <h2><span class="hud-index">02</span>Active Tracking / Signals</h2>
-        <div class="line"><span>Wi-Fi access points</span><strong id="aps">0</strong></div>
-        <div class="line"><span>BLE environment</span><strong id="ble">0 devices</strong></div>
-        <div class="line"><span>NFC events (5 min)</span><strong id="nfcEvents">0</strong></div>
-        <div class="line"><span>Link encryption</span><strong>AES-GCM</strong></div>
-      </article>
-
-      <article class="panel hero">
-        <h2><span class="hud-index">03</span>Link Gauges / System Intelligence</h2>
-        <div class="metrics">
-          <div class="metric"><b id="temp"><span id="tempValue">--</span><span id="trendArrow" class="stable">&#8213;</span></b><span>Temperature</span></div>
-          <div class="metric"><b id="devices">0</b><span>Known devices</span></div>
-          <div class="metric"><b id="trust">--</b><span>Trust score</span></div>
+    <main>
+      <section id="telemetry-panel">
+        <h2>Hardware Telemetry</h2>
+        <div id="telemetry-grid">
+          <div class="metric"><span class="label">Thermal:</span> <span id="temp-val">--</span> °C</div>
+          <div class="metric"><span class="label">Wi-Fi APs:</span> <span id="wifi-val">--</span></div>
+          <div class="metric"><span class="label">BLE Devices:</span> <span id="ble-val">--</span></div>
+          <div class="metric"><span class="label">NFC Events:</span> <span id="nfc-val">--</span></div>
         </div>
-        <div class="actions">
-          <button class="btn" id="connect">Connect Joker</button>
-          <button class="btn ghost-btn" id="ghost">Ghost Protocol</button>
-          <button class="btn danger" id="diagnostic">Cooling Diagnostic</button>
+      </section>
+
+      <section id="vault-panel">
+        <h2>Local Encrypted Vault</h2>
+        <input type="password" id="vault-passphrase" placeholder="Passphrase" autocomplete="current-password">
+        <button id="vault-unlock-btn">Unlock Vault</button>
+        <div id="vault-status">Locked</div>
+      </section>
+
+      <section id="security-audit-panel" aria-labelledby="security-audit-title">
+        <h2 id="security-audit-title">Authorized Security Assessment</h2>
+        <p>Local, read-only defensive assessment tools. Use only with documented authorization.</p>
+
+        <div id="authorization-box">
+          <label for="auth-reference">Authorization Ticket #</label>
+          <input id="auth-reference" type="text" placeholder="e.g., AUTH-2026-001" autocomplete="off">
+          <label for="admin-pin">Security Officer PIN / Passphrase</label>
+          <input id="admin-pin" type="password" placeholder="Local passphrase" autocomplete="current-password">
+          <label>
+            <input id="research-ack" type="checkbox">
+            I confirm that this assessment is authorized and will use only read-only defensive features.
+          </label>
+          <button id="verify-authorization-btn">Verify Authorization</button>
+          <div id="authorization-status" role="status">Locked: authorization required.</div>
         </div>
-      </article>
 
-      <article class="panel wide">
-        <h2><span class="hud-index">04</span>Watchdog / Active Assessment</h2>
-        <div class="line"><span>Pipeline</span><strong>INPUT &rarr; TRUST &rarr; CONTEXT &rarr; ACTION</strong></div>
-        <div class="line"><span>Latest alert</span><span class="severity low" id="alert">NO ACTIVE ALERTS</span></div>
-        <div class="line"><span>Predicted state</span><strong id="predictedState">NOMINAL</strong></div>
-        <div class="line"><span>Storage vault</span><strong id="vault">LOCKED / ENCRYPTED (AES-256-GCM)</strong></div>
-        <div class="line"><span>Intelligence source</span><strong id="intelSource">NO MODEL LOADED</strong></div>
-      </article>
+        <div id="audit-modules" class="locked" aria-disabled="true">
+          <section class="audit-module" aria-labelledby="nfc-audit-title">
+            <h3 id="nfc-audit-title">Access Card Technology Classification</h3>
+            <p>Read-only metadata classification. No writing, cloning, credential extraction, relay simulation, or distance-bounding tests.</p>
+            <label for="nfc-technology">Tag technology / metadata</label>
+            <input id="nfc-technology" type="text" placeholder="e.g., MIFARE Classic, DESFire EV3">
+            <button id="classify-nfc-btn">Classify Technology</button>
+            <div id="nfc-audit-result" role="status">Awaiting authorized input.</div>
+          </section>
 
-      <article class="panel side">
-        <h2><span class="hud-index">05</span>Command Surface</h2>
-        <div class="actions">
-          <button class="btn" data-command="HID payload queued">Quick Hack</button>
-          <button class="btn" data-command="GPIO feedback toggled">GPIO Feedback</button>
-          <button class="btn" id="exportIntel">Export Intel</button>
-          <button class="btn ghost-btn" id="clearVault">Clear Vault</button>
-        </div>
-      </article>
+          <section class="audit-module" aria-labelledby="asset-audit-title">
+            <h3 id="asset-audit-title">Offline Asset Compliance Checklist</h3>
+            <p>Paste a local JSON asset list. No network discovery or credential probing is performed.</p>
+            <label for="asset-inventory">Asset inventory JSON</label>
+            <textarea id="asset-inventory" rows="6" placeholder='[{"name":"Camera-01","credentialRotationNeeded":true,"firmwareReviewNeeded":false}]'></textarea>
+            <button id="assess-assets-btn">Assess Offline Inventory</button>
+            <div id="asset-audit-result" role="status">No inventory assessed.</div>
+          </section>
 
-      <article class="panel bridge">
-        <h2><span class="hud-index">06</span>Device Bridge</h2>
-        <div class="line"><span>Hardware</span><strong id="bridgeHardware">SGP Joker Card</strong></div>
-        <div class="line"><span>Transport</span><strong id="bridgeTransport">Disconnected</strong></div>
-        <div class="line"><span>Modules operational</span><strong id="bridgeModuleCount">0 / 8</strong></div>
-      </article>
+          <section class="audit-module" aria-labelledby="thermal-audit-title">
+            <h3 id="thermal-audit-title">TSCM Thermal Sweep</h3>
+            <p>Local sensor-grid analysis for overheating hazards or unexpected hot zones.</p>
+            <label for="thermal-threshold">Anomaly threshold above ambient (°C)</label>
+            <input id="thermal-threshold" type="number" min="0.1" step="0.1" value="2.5">
+            <button id="calibrate-thermal-btn">Calibrate Ambient Baseline</button>
+            <button id="scan-thermal-btn">Analyze Thermal Grid</button>
+            <canvas id="thermal-display" width="320" height="160" aria-label="Local thermal heat-map display"></canvas>
+            <div id="thermal-audit-result" role="status">Baseline not calibrated.</div>
+          </section>
 
-      <article class="panel awareness">
-        <h2><span class="hud-index">07</span>Awareness Stack</h2>
-        <div class="pipeline-row" id="pipelineRow">
-          <div class="pipeline-stage" data-stage="input"><span class="stage-dot"></span><span class="label">Input</span></div>
-          <div class="pipeline-arrow">&rarr;</div>
-          <div class="pipeline-stage" data-stage="trust"><span class="stage-dot"></span><span class="label">Trust</span></div>
-          <div class="pipeline-arrow">&rarr;</div>
-          <div class="pipeline-stage" data-stage="context"><span class="stage-dot"></span><span class="label">Context</span></div>
-          <div class="pipeline-arrow">&rarr;</div>
-          <div class="pipeline-stage" data-stage="action"><span class="stage-dot"></span><span class="label">Action</span></div>
-        </div>
-        <div class="line"><span>Trend</span><strong id="thermalTrend">stable</strong></div>
-      </article>
+          <section class="audit-module" aria-labelledby="physical-audit-title">
+            <h3 id="physical-audit-title">Physical Access Monitoring</h3>
+            <p>Displays GPIO security sensor state and line activity only; Wiegand data payloads are never captured or logged.</p>
+            <button id="refresh-gpio-btn">Refresh Physical States</button>
+            <div id="gpio-monitor-status" role="status">No physical state sampled.</div>
+          </section>
 
-      <article class="panel hackpipe">
-        <h2><span class="hud-index">08</span>Hack Pipeline</h2>
-        <div class="stepper" id="hackStepper">
-          <div class="step" data-step="select">Select</div>
-          <div class="step" data-step="path">Path</div>
-          <div class="step" data-step="execute">Execute</div>
-          <div class="step" data-step="feedback">Feedback</div>
-        </div>
-        <div class="action-queue" id="actionQueue"><p class="consent-note">No actions transmitted yet this session.</p></div>
-      </article>
-    </section>
-
-    <!-- ================= Module Launcher + Detail ================= -->
-    <section class="hud" style="margin-top:14px;">
-      <article class="panel full">
-        <h2>Apps &middot; Module Launcher</h2>
-        <div class="module-grid" id="moduleGrid"></div>
-      </article>
-
-      <article class="panel full" id="moduleDetail">
-        <h2 id="moduleDetailTitle">Module Detail</h2>
-        <div id="moduleDetailBody"><p class="consent-note">Select a module above to view its live controls and readouts.</p></div>
-      </article>
-
-      <article class="panel full" id="localModelPanel">
-        <h2>Local Model &middot; On-Device Intelligence (No API Key)</h2>
-        <p class="consent-note">
-          Runs entirely in this browser tab via WebAssembly (no server, no account, no API key, no data leaves your device).
-          Pick a small curated GGUF model or paste any Hugging Face GGUF repo. The file downloads once and is cached by the browser.
-        </p>
-        <div class="module-grid" id="curatedModelGrid"></div>
-        <div class="actions" style="margin-top:10px;">
-          <input id="customRepo" type="text" placeholder="Hugging Face repo, e.g. bartowski/Llama-3.2-1B-Instruct-GGUF" style="flex:1;min-width:220px;background:#081114;border:1px solid #34565b;color:var(--text);border-radius:8px;padding:9px;" />
-          <input id="customFile" type="text" placeholder="GGUF filename, e.g. Llama-3.2-1B-Instruct-Q4_K_M.gguf" style="flex:1;min-width:220px;background:#081114;border:1px solid #34565b;color:var(--text);border-radius:8px;padding:9px;" />
-          <button class="btn" id="loadCustomModel">Load Custom GGUF</button>
-        </div>
-        <div class="line" style="margin-top:10px;">
-          <span id="modelStatus">No local model loaded</span>
-          <strong id="modelProgress">0%</strong>
-        </div>
-        <div class="actions">
-          <button class="btn ghost-btn" id="unloadModel">Unload Model</button>
-        </div>
-      </article>
-
-      <article class="panel full">
-        <h2>Settings</h2>
-        <div class="settings-grid">
-          <div class="toggle-row"><span>Prefer Local Model over Cloud Agent</span><input type="checkbox" id="preferLocalToggle" checked /></div>
-          <div class="toggle-row"><span>Cloud Agent (OpenRouter via Supabase, optional)</span><input type="checkbox" id="cloudAgentToggle" /></div>
-          <div class="toggle-row"><span>Buzzer on Watchdog alerts</span><input type="checkbox" id="buzzerToggle" checked /></div>
-          <div class="toggle-row">
-            <span>Transport</span>
-            <select id="transportSelect" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;">
-              <option value="simulated">Simulated</option>
-              <option value="ble">BLE / Web Bluetooth</option>
-              <option value="wifi">Wi‑Fi / Custom endpoint</option>
-              <option value="custom">Custom PCB profile</option>
-            </select>
-          </div>
-          <div class="toggle-row">
-            <span>Board type</span>
-            <select id="boardTypeSelect" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;">
-              <option value="SGP Joker Card">SGP Joker Card</option>
-              <option value="Custom PCB">Custom PCB</option>
-              <option value="Debug Board">Debug Board</option>
-            </select>
-          </div>
-          <div class="toggle-row">
-            <span>Device name</span>
-            <input id="deviceNameInput" type="text" placeholder="e.g. PCB-ALPHA" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
-          </div>
-          <div class="toggle-row">
-            <span>Endpoint URL</span>
-            <input id="endpointUrlInput" type="text" placeholder="https://device.local/api or http://192.168.1.50:9000" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
-          </div>
-          <div class="toggle-row">
-            <span>Wi‑Fi SSID</span>
-            <input id="wifiSsidInput" type="text" placeholder="JokerNet" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
-          </div>
-          <div class="toggle-row">
-            <span>Wi‑Fi password</span>
-            <input id="wifiPasswordInput" type="password" placeholder="Optional for local tests" style="background:#081114;border:1px solid #34565b;color:var(--text);padding:8px;border-radius:8px;" />
-          </div>
-          <div class="toggle-row">
-            <span>Vault passphrase</span>
-            <span style="display:flex;gap:6px;">
-              <input type="password" id="vaultPass" placeholder="Enter passphrase" />
-              <button class="btn" id="unlockVault" style="padding:6px 9px;font-size:11px;">Unlock</button>
-            </span>
-          </div>
-          <div class="toggle-row">
-            <span>Kill Switch</span>
-            <button class="btn danger" id="killDeviceToggle">Kill Device</button>
+          <div class="audit-actions">
+            <button id="export-compliance-btn">Export Local Compliance Report</button>
+            <button id="clear-audit-session-btn">Clear Audit Session</button>
           </div>
         </div>
-        <div class="actions" style="margin-top:12px;">
-          <button class="btn" id="applyConnectionProfile">Apply Connection Profile</button>
-        </div>
-        <p class="consent-note">The Local Model tab is the default, key-free intelligence source. Cloud Agent is an optional fallback that stays off unless you explicitly enable it and configure your own Supabase Edge Function. The Vault encrypts all stored history locally with AES-256-GCM; unlock it with a passphrase to enable Export/Clear. Stealth Mode disables RGB/Buzzer/WiFi signaling and forces Ghost Protocol regardless of live data flow. Use the transport selector above to connect to a physical Joker Card, a BLE board, or a custom Wi‑Fi PCB profile.</p>
-      </article>
-    </section>
-  </main>
-
-  <script src="./js/config.example.js"></script>
-  <script type="module" src="./js/app.js"></script>
-  <script>
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./service-worker.js").catch(() => {});
-      });
-    }
-  </script>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>
