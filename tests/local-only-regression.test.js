@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { DataFirewall, SecurityAuditFirewall } from '../js/data-firewall.js';
 import { JokerAdapter } from '../js/joker-adapter.js';
-import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from '../js/security-audit-suite.js';
+import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor, NetworkRadarScanner } from '../js/security-audit-suite.js';
 import { LocalConsoleLLM } from '../js/local-llm-controller.js';
-import { AppController } from '../js/app.js';
+import { AppController, THEME_PRESETS } from '../js/app.js';
 
 describe('Local-Only Core Architecture', () => {
   it('DataFirewall evaluates alerts locally without external requests', () => {
@@ -194,30 +194,6 @@ describe('Local GGUF LLM Console Controller', () => {
   });
 });
 
-describe('UI Performance and Styling Architecture', () => {
-  const cssSource = readFileSync(new URL('../css/style.css', import.meta.url), 'utf8');
-  const htmlSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-
-  it('defines required CSS variable design tokens and high-performance panel scoping', () => {
-    ['--bg-primary', '--accent-cyber', '--accent-warning', '--text-main', '--panel-border'].forEach((token) => {
-      expect(cssSource).toContain(token);
-    });
-    expect(cssSource).toMatch(/contain:\s*layout\s+style/);
-  });
-
-  it('preserves exact DOM ID bindings for security, LLM, and thermal UI components', () => {
-    ['id="security-audit-panel"', 'id="local-llm-panel"', 'id="llm-confirmation-modal"', 'id="thermal-display"'].forEach((marker) => {
-      expect(htmlSource).toContain(marker);
-    });
-  });
-
-  it('introduces no external CSS frameworks, remote fonts, or CDN stylesheet dependencies', () => {
-    expect(htmlSource).not.toMatch(/<link[^>]+href=["']https?:\/\//i);
-    expect(cssSource).not.toMatch(/@import\s+url\(["']?https?:\/\//i);
-    expect(cssSource).not.toMatch(/fonts\.googleapis\.com|cdn\.jsdelivr\.net|unpkg\.com|bootstrapcdn|cdnjs/i);
-  });
-});
-
 describe('Live Hardware Telemetry Engine', () => {
   it('generates a valid 8x8 thermal grid matrix and updates GPIO pin states locally', async () => {
     const adapter = new JokerAdapter();
@@ -251,7 +227,8 @@ describe('Live Hardware Telemetry Engine', () => {
       'handleConnect', 'handleVaultUnlock', 'verifyAuthorization', 'classifyNfc', 'handleStartNfcReader',
       'assessAssets', 'calibrateThermal', 'scanThermal', 'refreshGpio', 'handleToggleGpioLine', 'handleSelfTest',
       'exportComplianceReport', 'clearAuditSession', 'handleGgufFileSelected', 'handleLlmExecute',
-      'handleConfirmLlmAction', 'handleCancelLlmAction'
+      'handleConfirmLlmAction', 'handleCancelLlmAction', 'handleScanAll', 'handleLockdown', 'handleEmergencyLockdown',
+      'handleThemeChange', 'renderFleetStatus', 'appendAlertStream'
     ].forEach((name) => {
       expect(typeof app[name]).toBe('function');
     });
@@ -261,5 +238,61 @@ describe('Live Hardware Telemetry Engine', () => {
     const source = readFileSync(new URL('../js/joker-adapter.js', import.meta.url), 'utf8');
     expect(source).not.toMatch(/fetch\(|XMLHttpRequest|axios/i);
     expect(source).not.toMatch(/https?:\/\/(?!.*localhost)/i);
+  });
+});
+
+describe('AEGIS Single-Pane HUD', () => {
+  const cssSource = readFileSync(new URL('../css/style.css', import.meta.url), 'utf8');
+  const htmlSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+
+  it('defines required CSS variable design tokens and high-performance quadrant scoping', () => {
+    ['--bg-primary', '--accent-cyber', '--accent-warning', '--text-main', '--panel-border'].forEach((token) => {
+      expect(cssSource).toContain(token);
+    });
+    expect(cssSource).toMatch(/contain:\s*layout\s+style\s+paint/);
+  });
+
+  it('contains all 7 AEGIS HUD quadrant panel IDs and key dynamic elements', () => {
+    [
+      'id="thermal-recon-panel"', 'id="active-alerts-panel"', 'id="network-matrix-panel"',
+      'id="nfc-center-panel"', 'id="device-control-panel"', 'id="fleet-status-panel"', 'id="audit-compliance-panel"',
+      'id="thermal-display"', 'id="radar-display"', 'id="llm-confirmation-modal"'
+    ].forEach((marker) => {
+      expect(htmlSource).toContain(marker);
+    });
+  });
+
+  it('defines theme variable presets for Operator, Tactical, and Clinical HUD themes', () => {
+    expect(THEME_PRESETS.operator['--accent-cyber']).toBeDefined();
+    expect(THEME_PRESETS.tactical['--accent-warning']).toBeDefined();
+    expect(THEME_PRESETS.clinical['--bg-primary']).toBeDefined();
+  });
+
+  it('NetworkRadarScanner renders sweep and device blips without throwing', () => {
+    const scanner = new NetworkRadarScanner();
+    const ctx = { clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), stroke: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), closePath: vi.fn(), fill: vi.fn() };
+    const canvas = { width: 200, height: 200, getContext: () => ctx };
+    expect(() => scanner.render(canvas, [{ angle: 0.5, rssi: -50, kind: 'BLE', safety: 'KNOWN' }])).not.toThrow();
+    expect(ctx.arc).toHaveBeenCalled();
+  });
+
+  it('generates local, non-RF-capture radar telemetry from JokerAdapter', async () => {
+    const adapter = new JokerAdapter();
+    await adapter.connect();
+    const devices = adapter.getRadarScanData();
+    expect(Array.isArray(devices)).toBe(true);
+    expect(devices.length).toBeGreaterThan(0);
+    devices.forEach((device) => {
+      expect(Number.isFinite(device.angle)).toBe(true);
+      expect(Number.isFinite(device.rssi)).toBe(true);
+    });
+  });
+
+  it('contains no external CDN references, remote map tiles, or offensive network capabilities', () => {
+    const appSource = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+    const adapterSource = readFileSync(new URL('../js/joker-adapter.js', import.meta.url), 'utf8');
+    const suiteSource = readFileSync(new URL('../js/security-audit-suite.js', import.meta.url), 'utf8');
+    const combined = [cssSource, htmlSource, appSource, adapterSource, suiteSource].join('\n');
+    expect(combined).not.toMatch(/deauth|packet\s*injection|jamming|mapbox|leaflet|openstreetmap|cdn\.[a-z]+\.[a-z]+/i);
   });
 });

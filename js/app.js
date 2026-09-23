@@ -1,8 +1,14 @@
 import { JokerAdapter } from './joker-adapter.js';
 import { DataFirewall, SecurityAuditFirewall } from './data-firewall.js';
 import { LocalModelRuntime } from './local-model.js';
-import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from './security-audit-suite.js';
+import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor, NetworkRadarScanner } from './security-audit-suite.js';
 import { LocalConsoleLLM } from './local-llm-controller.js';
+
+export const THEME_PRESETS = {
+  operator: { '--bg-primary': '#0a0800', '--bg-panel': 'rgba(20,14,0,0.86)', '--bg-panel-alt': 'rgba(14,10,0,0.72)', '--accent-cyber': '#ffb020', '--accent-cyber-dim': '#7a5410', '--accent-warning': '#ff8c1a', '--accent-critical': '#ff4757', '--text-main': '#ffe6c2', '--text-dim': '#8f7550', '--panel-border': '#3d2c1f' },
+  tactical: { '--bg-primary': '#050805', '--bg-panel': 'rgba(10,16,8,0.86)', '--bg-panel-alt': 'rgba(8,12,6,0.72)', '--accent-cyber': '#8faa3c', '--accent-cyber-dim': '#556622', '--accent-warning': '#c0392b', '--accent-critical': '#ff4757', '--text-main': '#e3e8cf', '--text-dim': '#7a8560', '--panel-border': '#33401f' },
+  clinical: { '--bg-primary': '#0a0a0a', '--bg-panel': 'rgba(20,20,20,0.9)', '--bg-panel-alt': 'rgba(30,30,30,0.8)', '--accent-cyber': '#ffffff', '--accent-cyber-dim': '#888888', '--accent-warning': '#ffd400', '--accent-critical': '#ff3b30', '--text-main': '#ffffff', '--text-dim': '#aaaaaa', '--panel-border': '#444444' }
+};
 
 export class AppController {
   constructor() {
@@ -15,10 +21,12 @@ export class AppController {
     this.thermalScanner = new TSCMThermalScanner();
     this.gpioMonitor = new GPIOSecurityMonitor({ dataFirewall: this.auditFirewall });
     this.assetAuditor = new OfflineAssetAuditor();
+    this.radarScanner = new NetworkRadarScanner();
     this.localLLM = new LocalConsoleLLM({ appController: this, dataFirewall: this.auditFirewall });
     this.pollTimer = null;
     this.pendingLlmAction = null;
     this.latestTelemetry = null;
+    this.currentTheme = 'operator';
   }
 
   createLocalVaultBridge() {
@@ -38,6 +46,12 @@ export class AppController {
 
   bindEvents() {
     this.bind('connect-btn', 'click', () => this.handleConnect());
+    this.bind('header-emergency-lock-btn', 'click', () => this.handleEmergencyLockdown());
+    this.bind('emergency-btn', 'click', () => this.handleEmergencyLockdown());
+    this.bind('scan-all-btn', 'click', () => this.handleScanAll());
+    this.bind('lockdown-btn', 'click', () => this.handleLockdown());
+    this.bind('command-export-btn', 'click', () => this.exportComplianceReport());
+    this.bind('theme-select', 'change', (event) => this.handleThemeChange(event.target.value));
     this.bind('vault-unlock-btn', 'click', () => this.handleVaultUnlock());
     this.bind('verify-authorization-btn', 'click', () => this.verifyAuthorization());
     this.bind('classify-nfc-btn', 'click', () => this.classifyNfc());
@@ -76,6 +90,14 @@ export class AppController {
     }
   }
 
+  handleThemeChange(themeName) {
+    const preset = THEME_PRESETS[themeName] || THEME_PRESETS.operator;
+    if (typeof document !== 'undefined') {
+      Object.entries(preset).forEach(([key, value]) => document.documentElement.style.setProperty(key, value));
+    }
+    this.currentTheme = themeName;
+  }
+
   handleVaultUnlock(providedPassphrase) {
     const pass = providedPassphrase ?? document.getElementById('vault-passphrase')?.value;
     if (pass) {
@@ -95,8 +117,10 @@ export class AppController {
   }
 
   setAuditLocked(locked, message) {
-    const panel = document.getElementById('audit-modules');
-    if (panel) { panel.classList.toggle('locked', locked); panel.setAttribute('aria-disabled', String(locked)); }
+    ['nfc-center-panel', 'device-control-panel', 'fleet-status-panel'].forEach((id) => {
+      const panel = document.getElementById(id);
+      if (panel) { panel.classList.toggle('locked', locked); panel.setAttribute('aria-disabled', String(locked)); }
+    });
     const status = document.getElementById('authorization-status');
     if (status) status.textContent = message;
   }
@@ -106,12 +130,20 @@ export class AppController {
     try { return await action(); } catch (error) { this.updateStatus(`AUDIT ERROR: ${error.message}`); return null; }
   }
 
+  updateNfcPostureMeter(risk) {
+    const fill = document.getElementById('nfc-posture-meter-fill');
+    if (!fill) return;
+    const percent = { LOW: 20, REVIEW: 55, ELEVATED: 85, UNKNOWN: 50 }[risk] ?? 50;
+    fill.style.width = `${percent}%`;
+  }
+
   async classifyNfc() {
     return this.withAudit(async () => {
       const metadata = document.getElementById('nfc-technology')?.value || '';
       const result = this.nfcAuditor.classify(metadata);
       await this.auditFirewall.logEvent('NFC_CLASSIFICATION', { classification: result.classification, risk: result.risk, readOnly: true });
       this.setText('nfc-audit-result', `${result.classification}: ${result.finding}`);
+      this.updateNfcPostureMeter(result.risk);
       this.updateStatus('NFC TECHNOLOGY REVIEW COMPLETE');
       return result;
     });
@@ -122,6 +154,7 @@ export class AppController {
       const result = await this.adapter.startNfcReaderSession((techSummary) => {
         const classification = this.nfcAuditor.classify(`${(techSummary.recordTypes || []).join(' ')} iso 14443-a`);
         this.setText('nfc-reader-status', `Live tag detected. ${classification.classification}: ${classification.finding}`);
+        this.updateNfcPostureMeter(classification.risk);
         this.auditFirewall.logEvent('NFC_LIVE_READ', { recordTypes: techSummary.recordTypes, serialNumberPresent: techSummary.serialNumberPresent, classification: classification.classification }).catch(() => {});
       });
       if (!result.supported) this.setText('nfc-reader-status', 'Web NFC is unsupported in this browser; use manual classification instead.');
@@ -160,8 +193,9 @@ export class AppController {
       const threshold = Number(document.getElementById('thermal-threshold')?.value || 2.5);
       const result = this.thermalScanner.scan(telemetry.thermalGrid, threshold);
       this.thermalScanner.render(document.getElementById('thermal-display'), result);
+      const labels = result.anomalies.map((anomaly) => this.thermalScanner.classifyAnomaly(anomaly.delta));
       await this.auditFirewall.logEvent('THERMAL_SCAN', { baseline: result.baseline, threshold: result.threshold, anomalyCount: result.anomalies.length });
-      this.setText('thermal-audit-result', `${result.status}: ${result.anomalies.length} local heat anomalies found.`);
+      this.setText('thermal-audit-result', `${result.status}: ${result.anomalies.length} local heat anomalies found. ${labels.join('; ')}`.trim());
       this.updateStatus(result.status);
       return result;
     });
@@ -194,6 +228,31 @@ export class AppController {
       this.setText('gpio-monitor-status', `Self-test ${result.passed ? 'PASSED' : 'FAILED'} (${result.latencyMs}ms, run #${result.runCount}).`);
       return result;
     });
+  }
+
+  async handleScanAll() {
+    return this.withAudit(async () => {
+      await this.refreshGpio();
+      await this.scanThermal();
+      const radarCanvas = document.getElementById('radar-display');
+      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData());
+      await this.auditFirewall.logEvent('SCAN_ALL', { triggeredAt: new Date().toISOString() });
+      this.appendAlertStream('Full local scan cycle completed (thermal + GPIO + radar).', 'info');
+      return true;
+    });
+  }
+
+  handleLockdown() {
+    this.setAuditLocked(true, 'Locked: manual lockdown engaged.');
+    this.appendAlertStream('Manual lockdown engaged. Re-authorization required for gated modules.', 'warning');
+  }
+
+  async handleEmergencyLockdown() {
+    if (this.adapter.connected) await this.adapter.disconnect();
+    this.clearAuditSession();
+    this.localLLM.unloadSession();
+    this.appendAlertStream('EMERGENCY LOCKDOWN triggered. Hardware disconnected and session zeroized.', 'critical');
+    this.updateStatus('EMERGENCY LOCKDOWN');
   }
 
   async exportComplianceReport() {
@@ -243,6 +302,23 @@ export class AppController {
     line.textContent = text;
     line.className = `llm-log-${kind}`;
     log.appendChild(line);
+  }
+
+  appendAlertStream(text, severity = 'log') {
+    const stream = document.getElementById('alert-stream');
+    if (!stream) return;
+    const line = document.createElement('div');
+    line.className = `alert-${severity}`;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+    stream.prepend(line);
+    while (stream.childNodes.length > 50) stream.removeChild(stream.lastChild);
+  }
+
+  renderFleetStatus() {
+    const list = document.getElementById('fleet-device-list');
+    if (!list) return;
+    const activity = Object.values(this.adapter.getGpioSnapshot()).reduce((sum, line) => sum + line.activity, 0);
+    list.textContent = `LOCAL-NODE-01 | ${this.adapter.connected ? 'ONLINE' : 'OFFLINE'} | Transport: ${this.adapter.transport} | GPIO events: ${activity}`;
   }
 
   showLlmConfirmationModal(pending) {
@@ -308,7 +384,11 @@ export class AppController {
     this.pollTimer = setInterval(async () => {
       if (!this.adapter.connected) return;
       const data = await this.adapter.sample();
-      if (data) { this.renderTelemetry(data); this.firewall.generateAlert(data); }
+      if (data) {
+        this.renderTelemetry(data);
+        const alerts = this.firewall.generateAlert(data);
+        alerts.forEach((alert) => this.appendAlertStream(`${alert.type}: ${JSON.stringify(alert.value)}`, alert.level === 'CRITICAL' ? 'critical' : alert.level === 'HIGH' ? 'warning' : 'info'));
+      }
     }, 1000);
   }
 
@@ -320,6 +400,9 @@ export class AppController {
       this.setText('nfc-val', data.nfc.eventsLast5Min);
       this.updateTelemetryBadge(data.thermal);
       this.latestTelemetry = data;
+      const radarCanvas = document.getElementById('radar-display');
+      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData());
+      this.renderFleetStatus();
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
     else apply();

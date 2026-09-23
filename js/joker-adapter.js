@@ -202,4 +202,17 @@ export class JokerAdapter {
     this._nfcEventTimestamps = this._nfcEventTimestamps.filter((t) => now - t <= windowMs);
     return this._nfcEventTimestamps.length || Math.floor(Math.random() * 3);
   }
+
+  getRadarScanData() {
+    const bleCount = this._bleDiscovered.size || Math.floor(Math.random() * 4) + 1;
+    const wifiCount = Math.floor(Math.random() * 6) + 2;
+    const devices = [];
+    for (let i = 0; i < bleCount; i++) {
+      devices.push({ angle: Math.random() * Math.PI * 2, rssi: -40 - Math.random() * 50, kind: 'BLE', safety: i === 0 ? 'KNOWN' : 'UNKNOWN' });
+    }
+    for (let i = 0; i < wifiCount; i++) {
+      devices.push({ angle: Math.random() * Math.PI * 2, rssi: -30 - Math.random() * 60, kind: 'WIFI', safety: 'UNKNOWN' });
+    }
+    return devices;
+  }
 }

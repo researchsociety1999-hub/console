@@ -26,6 +26,12 @@ export class TSCMThermalScanner {
     return { baseline: this.baseline, threshold: Number(threshold), values, anomalies, status: anomalies.length ? 'ANOMALIES_DETECTED' : 'NORMAL' };
   }
 
+  classifyAnomaly(delta) {
+    if (delta > 5) return 'Electronics (static heat signature; heuristic estimate only)';
+    if (delta > 2) return 'Human/biological (transient heat signature; heuristic estimate only)';
+    return 'Baseline';
+  }
+
   render(canvas, result, columns = 8) {
     if (!canvas?.getContext) return;
     const ctx = canvas.getContext('2d');
@@ -130,5 +136,57 @@ export class OfflineAssetAuditor {
       return { name, posture: issues.length ? 'REVIEW_REQUIRED' : 'NO_MANUAL_FINDING', issues };
     });
     return { assessedOffline: true, assetCount: findings.length, findings, reviewRequired: findings.filter((item) => item.posture === 'REVIEW_REQUIRED').length };
+  }
+}
+
+export class NetworkRadarScanner {
+  constructor() { this.sweepAngle = 0; }
+
+  render(canvas, devices = []) {
+    if (!canvas?.getContext) return;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    const cx = width / 2;
+    const cy = height / 2;
+    const maxRadius = Math.min(width, height) / 2 - 4;
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 176, 32, 0.35)';
+    ctx.lineWidth = 1;
+    [0.25, 0.5, 0.75, 1].forEach((fraction) => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, maxRadius * fraction, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+    ctx.beginPath();
+    ctx.moveTo(cx - maxRadius, cy);
+    ctx.lineTo(cx + maxRadius, cy);
+    ctx.moveTo(cx, cy - maxRadius);
+    ctx.lineTo(cx, cy + maxRadius);
+    ctx.stroke();
+
+    this.sweepAngle = (this.sweepAngle + 0.08) % (Math.PI * 2);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, maxRadius, this.sweepAngle, this.sweepAngle + 0.3);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255, 176, 32, 0.18)';
+    ctx.fill();
+
+    devices.forEach((device) => {
+      const rssi = Number.isFinite(device.rssi) ? device.rssi : -70;
+      const radiusFraction = Math.max(0, Math.min(1, 1 - (rssi + 100) / 70));
+      const radius = radiusFraction * maxRadius;
+      const angle = Number.isFinite(device.angle) ? device.angle : 0;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      ctx.beginPath();
+      ctx.fillStyle = device.safety === 'KNOWN' ? 'rgba(57, 255, 136, 0.9)' : 'rgba(255, 176, 32, 0.9)';
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
   }
 }
