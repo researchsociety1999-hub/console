@@ -192,3 +192,27 @@ describe('Local GGUF LLM Console Controller', () => {
     expect(source).not.toMatch(/humanConfirmed\s*=\s*true\s*;?\s*\/\//i);
   });
 });
+
+describe('UI Performance and Styling Architecture', () => {
+  const cssSource = readFileSync(new URL('../css/style.css', import.meta.url), 'utf8');
+  const htmlSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+
+  it('defines required CSS variable design tokens and high-performance panel scoping', () => {
+    ['--bg-primary', '--accent-cyber', '--accent-warning', '--text-main', '--panel-border'].forEach((token) => {
+      expect(cssSource).toContain(token);
+    });
+    expect(cssSource).toMatch(/contain:\s*layout\s+style/);
+  });
+
+  it('preserves exact DOM ID bindings for security, LLM, and thermal UI components', () => {
+    ['id="security-audit-panel"', 'id="local-llm-panel"', 'id="llm-confirmation-modal"', 'id="thermal-display"'].forEach((marker) => {
+      expect(htmlSource).toContain(marker);
+    });
+  });
+
+  it('introduces no external CSS frameworks, remote fonts, or CDN stylesheet dependencies', () => {
+    expect(htmlSource).not.toMatch(/<link[^>]+href=["']https?:\/\//i);
+    expect(cssSource).not.toMatch(/@import\s+url\(["']?https?:\/\//i);
+    expect(cssSource).not.toMatch(/fonts\.googleapis\.com|cdn\.jsdelivr\.net|unpkg\.com|bootstrapcdn|cdnjs/i);
+  });
+});

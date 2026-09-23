@@ -9,7 +9,7 @@ export class NFCSecurityAuditor {
 }
 
 export class TSCMThermalScanner {
-  constructor({ threshold = 2.5 } = {}) { this.threshold = threshold; this.baseline = null; }
+  constructor({ threshold = 2.5 } = {}) { this.threshold = threshold; this.baseline = null; this._offscreen = null; }
 
   calibrate(samples = []) {
     const valid = samples.map(Number).filter(Number.isFinite);
@@ -30,16 +30,43 @@ export class TSCMThermalScanner {
     const ctx = canvas.getContext('2d');
     const values = result?.values || [];
     const rows = Math.max(1, Math.ceil(values.length / columns));
-    const cellWidth = canvas.width / columns;
-    const cellHeight = canvas.height / rows;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const width = canvas.width;
+    const height = canvas.height;
+
+    if (!this._offscreen || this._offscreen.width !== width || this._offscreen.height !== height) {
+      this._offscreen = (typeof OffscreenCanvas !== 'undefined')
+        ? new OffscreenCanvas(width, height)
+        : (typeof document !== 'undefined' ? document.createElement('canvas') : null);
+      if (this._offscreen) { this._offscreen.width = width; this._offscreen.height = height; }
+    }
+    const offCanvas = this._offscreen;
+    const offCtx = offCanvas ? offCanvas.getContext('2d') : ctx;
+    const imageData = offCtx.createImageData(width, height);
+    const cellWidth = width / columns;
+    const cellHeight = height / rows;
+
     values.forEach((value, index) => {
       const ratio = Math.max(0, Math.min(1, (value - result.baseline + 2) / 8));
       const red = Math.round(40 + ratio * 215);
       const blue = Math.round(220 - ratio * 200);
-      ctx.fillStyle = `rgb(${red}, 70, ${blue})`;
-      ctx.fillRect((index % columns) * cellWidth, Math.floor(index / columns) * cellHeight, cellWidth, cellHeight);
+      const x0 = Math.floor((index % columns) * cellWidth);
+      const y0 = Math.floor(Math.floor(index / columns) * cellHeight);
+      const x1 = Math.min(width, Math.ceil(x0 + cellWidth));
+      const y1 = Math.min(height, Math.ceil(y0 + cellHeight));
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const offset = (y * width + x) * 4;
+          imageData.data[offset] = red;
+          imageData.data[offset + 1] = 70;
+          imageData.data[offset + 2] = blue;
+          imageData.data[offset + 3] = 255;
+        }
+      }
     });
+
+    offCtx.putImageData(imageData, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    if (offCanvas && offCanvas !== canvas) ctx.drawImage(offCanvas, 0, 0);
   }
 }
 

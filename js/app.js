@@ -273,10 +273,14 @@ export class AppController {
   }
 
   renderTelemetry(data) {
-    this.setText('temp-val', data.thermal.toFixed(1));
-    this.setText('wifi-val', data.wifi.accessPoints);
-    this.setText('ble-val', data.ble.devices);
-    this.setText('nfc-val', data.nfc.eventsLast5Min);
+    const apply = () => {
+      this.setText('temp-val', data.thermal.toFixed(1));
+      this.setText('wifi-val', data.wifi.accessPoints);
+      this.setText('ble-val', data.ble.devices);
+      this.setText('nfc-val', data.nfc.eventsLast5Min);
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
+    else apply();
   }
 
   setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }

@@ -31,7 +31,7 @@
         <h2>Local Encrypted Vault</h2>
         <input type="password" id="vault-passphrase" placeholder="Passphrase" autocomplete="current-password">
         <button id="vault-unlock-btn">Unlock Vault</button>
-        <div id="vault-status">Locked</div>
+        <div id="vault-status" role="status" aria-live="polite">Locked</div>
       </section>
 
       <section id="security-audit-panel" aria-labelledby="security-audit-title">
@@ -48,7 +48,7 @@
             I confirm that this assessment is authorized and will use only read-only defensive features.
           </label>
           <button id="verify-authorization-btn">Verify Authorization</button>
-          <div id="authorization-status" role="status">Locked: authorization required.</div>
+          <div id="authorization-status" role="status" aria-live="polite">Locked: authorization required.</div>
         </div>
 
         <div id="audit-modules" class="locked" aria-disabled="true">
@@ -58,7 +58,7 @@
             <label for="nfc-technology">Tag technology / metadata</label>
             <input id="nfc-technology" type="text" placeholder="e.g., MIFARE Classic, DESFire EV3">
             <button id="classify-nfc-btn">Classify Technology</button>
-            <div id="nfc-audit-result" role="status">Awaiting authorized input.</div>
+            <div id="nfc-audit-result" role="status" aria-live="polite">Awaiting authorized input.</div>
           </section>
 
           <section class="audit-module" aria-labelledby="asset-audit-title">
@@ -67,7 +67,7 @@
             <label for="asset-inventory">Asset inventory JSON</label>
             <textarea id="asset-inventory" rows="6" placeholder='[{"name":"Camera-01","credentialRotationNeeded":true,"firmwareReviewNeeded":false}]'></textarea>
             <button id="assess-assets-btn">Assess Offline Inventory</button>
-            <div id="asset-audit-result" role="status">No inventory assessed.</div>
+            <div id="asset-audit-result" role="status" aria-live="polite">No inventory assessed.</div>
           </section>
 
           <section class="audit-module" aria-labelledby="thermal-audit-title">
@@ -78,14 +78,14 @@
             <button id="calibrate-thermal-btn">Calibrate Ambient Baseline</button>
             <button id="scan-thermal-btn">Analyze Thermal Grid</button>
             <canvas id="thermal-display" width="320" height="160" aria-label="Local thermal heat-map display"></canvas>
-            <div id="thermal-audit-result" role="status">Baseline not calibrated.</div>
+            <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated.</div>
           </section>
 
           <section class="audit-module" aria-labelledby="physical-audit-title">
             <h3 id="physical-audit-title">Physical Access Monitoring</h3>
             <p>Displays GPIO security sensor state and line activity only; Wiegand data payloads are never captured or logged.</p>
             <button id="refresh-gpio-btn">Refresh Physical States</button>
-            <div id="gpio-monitor-status" role="status">No physical state sampled.</div>
+            <div id="gpio-monitor-status" role="status" aria-live="polite">No physical state sampled.</div>
           </section>
 
           <div class="audit-actions">
@@ -102,7 +102,7 @@
         <div id="model-upload-zone">
           <input id="gguf-file-input" type="file" accept=".gguf" hidden>
           <label for="gguf-file-input"><button type="button" id="select-gguf-btn">Select Local GGUF Model</button></label>
-          <div id="model-loading-status" role="status">No model loaded.</div>
+          <div id="model-loading-status" role="status" aria-live="polite">No model loaded.</div>
         </div>
 
         <div id="llm-console-interface" class="disabled-panel" aria-disabled="true">
