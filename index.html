@@ -59,6 +59,8 @@
             <input id="nfc-technology" type="text" placeholder="e.g., MIFARE Classic, DESFire EV3">
             <button id="classify-nfc-btn">Classify Technology</button>
             <div id="nfc-audit-result" role="status" aria-live="polite">Awaiting authorized input.</div>
+            <button id="start-nfc-reader-btn">Start Live NFC Reader (Web NFC)</button>
+            <div id="nfc-reader-status" role="status" aria-live="polite">Live NFC reader inactive.</div>
           </section>
 
           <section class="audit-module" aria-labelledby="asset-audit-title">
@@ -85,6 +87,10 @@
             <h3 id="physical-audit-title">Physical Access Monitoring</h3>
             <p>Displays GPIO security sensor state and line activity only; Wiegand data payloads are never captured or logged.</p>
             <button id="refresh-gpio-btn">Refresh Physical States</button>
+            <button id="toggle-door-btn">Toggle Door Contact</button>
+            <button id="toggle-pir-btn">Toggle PIR Motion</button>
+            <button id="toggle-tamper-btn">Toggle Tamper Sensor</button>
+            <button id="run-self-test-btn">Run GPIO Self-Test</button>
             <div id="gpio-monitor-status" role="status" aria-live="polite">No physical state sampled.</div>
           </section>
 

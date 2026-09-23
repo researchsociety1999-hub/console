@@ -36,9 +36,10 @@ export class LocalConsoleLLM {
     return { loaded: true, name: this.loadingModelName };
   }
 
-  async executeUserCommand(userInput) {
+  async executeUserCommand(userInput, context = {}) {
     if (!this.loaded || !this.wllama) throw new Error('Load a local GGUF model before issuing commands.');
-    const prompt = `${this.systemPrompt}\nUser: ${String(userInput || '').slice(0, 4000)}\nAssistant:`;
+    const contextLine = context && Object.keys(context).length ? `\nLive telemetry snapshot: ${JSON.stringify(context)}` : '';
+    const prompt = `${this.systemPrompt}${contextLine}\nUser: ${String(userInput || '').slice(0, 4000)}\nAssistant:`;
     const output = await this.wllama.createCompletion(prompt, { nPredict: 256 });
     return this.parseAndExecuteTools(output);
   }

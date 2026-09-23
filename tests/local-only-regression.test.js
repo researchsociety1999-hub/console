@@ -4,6 +4,7 @@ import { DataFirewall, SecurityAuditFirewall } from '../js/data-firewall.js';
 import { JokerAdapter } from '../js/joker-adapter.js';
 import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from '../js/security-audit-suite.js';
 import { LocalConsoleLLM } from '../js/local-llm-controller.js';
+import { AppController } from '../js/app.js';
 
 describe('Local-Only Core Architecture', () => {
   it('DataFirewall evaluates alerts locally without external requests', () => {
@@ -214,5 +215,51 @@ describe('UI Performance and Styling Architecture', () => {
     expect(htmlSource).not.toMatch(/<link[^>]+href=["']https?:\/\//i);
     expect(cssSource).not.toMatch(/@import\s+url\(["']?https?:\/\//i);
     expect(cssSource).not.toMatch(/fonts\.googleapis\.com|cdn\.jsdelivr\.net|unpkg\.com|bootstrapcdn|cdnjs/i);
+  });
+});
+
+describe('Live Hardware Telemetry Engine', () => {
+  it('generates a valid 8x8 thermal grid matrix and updates GPIO pin states locally', async () => {
+    const adapter = new JokerAdapter();
+    await adapter.connect();
+    const grid = adapter.generateThermalGrid();
+    expect(grid).toHaveLength(64);
+    expect(grid.every((value) => Number.isFinite(value))).toBe(true);
+
+    const before = adapter.getGpioSnapshot().doorContact.activity;
+    const toggled = adapter.toggleGpioLine('doorContact');
+    expect(toggled.activity).toBe(before + 1);
+    expect(adapter.getGpioSnapshot().doorContact.active).toBe(toggled.active);
+  });
+
+  it('detects anomalies end-to-end from adapter-generated thermal grid frames', async () => {
+    const adapter = new JokerAdapter();
+    await adapter.connect();
+    adapter.clearHeatSources();
+    const baselineFrame = adapter.generateThermalGrid();
+    const scanner = new TSCMThermalScanner({ threshold: 2 });
+    scanner.calibrate(baselineFrame);
+    adapter.addHeatSource(2, 2, 6);
+    const hotFrame = adapter.generateThermalGrid();
+    const result = scanner.scan(hotFrame, 2);
+    expect(result.anomalies.length).toBeGreaterThan(0);
+  });
+
+  it('resolves all UI-bound AppController handler methods to callable functions without touching the DOM', () => {
+    const app = new AppController();
+    [
+      'handleConnect', 'handleVaultUnlock', 'verifyAuthorization', 'classifyNfc', 'handleStartNfcReader',
+      'assessAssets', 'calibrateThermal', 'scanThermal', 'refreshGpio', 'handleToggleGpioLine', 'handleSelfTest',
+      'exportComplianceReport', 'clearAuditSession', 'handleGgufFileSelected', 'handleLlmExecute',
+      'handleConfirmLlmAction', 'handleCancelLlmAction'
+    ].forEach((name) => {
+      expect(typeof app[name]).toBe('function');
+    });
+  });
+
+  it('generates telemetry strictly locally without invoking remote network calls', () => {
+    const source = readFileSync(new URL('../js/joker-adapter.js', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/fetch\(|XMLHttpRequest|axios/i);
+    expect(source).not.toMatch(/https?:\/\/(?!.*localhost)/i);
   });
 });

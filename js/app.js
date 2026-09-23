@@ -18,6 +18,7 @@ export class AppController {
     this.localLLM = new LocalConsoleLLM({ appController: this, dataFirewall: this.auditFirewall });
     this.pollTimer = null;
     this.pendingLlmAction = null;
+    this.latestTelemetry = null;
   }
 
   createLocalVaultBridge() {
@@ -40,10 +41,15 @@ export class AppController {
     this.bind('vault-unlock-btn', 'click', () => this.handleVaultUnlock());
     this.bind('verify-authorization-btn', 'click', () => this.verifyAuthorization());
     this.bind('classify-nfc-btn', 'click', () => this.classifyNfc());
+    this.bind('start-nfc-reader-btn', 'click', () => this.handleStartNfcReader());
     this.bind('assess-assets-btn', 'click', () => this.assessAssets());
     this.bind('calibrate-thermal-btn', 'click', () => this.calibrateThermal());
     this.bind('scan-thermal-btn', 'click', () => this.scanThermal());
     this.bind('refresh-gpio-btn', 'click', () => this.refreshGpio());
+    this.bind('toggle-door-btn', 'click', () => this.handleToggleGpioLine('doorContact'));
+    this.bind('toggle-pir-btn', 'click', () => this.handleToggleGpioLine('pirMotion'));
+    this.bind('toggle-tamper-btn', 'click', () => this.handleToggleGpioLine('vibrationTamper'));
+    this.bind('run-self-test-btn', 'click', () => this.handleSelfTest('gpio'));
     this.bind('export-compliance-btn', 'click', () => this.exportComplianceReport());
     this.bind('clear-audit-session-btn', 'click', () => this.clearAuditSession());
     this.bind('gguf-file-input', 'change', (event) => this.handleGgufFileSelected(event));
@@ -111,6 +117,20 @@ export class AppController {
     });
   }
 
+  async handleStartNfcReader() {
+    return this.withAudit(async () => {
+      const result = await this.adapter.startNfcReaderSession((techSummary) => {
+        const classification = this.nfcAuditor.classify(`${(techSummary.recordTypes || []).join(' ')} iso 14443-a`);
+        this.setText('nfc-reader-status', `Live tag detected. ${classification.classification}: ${classification.finding}`);
+        this.auditFirewall.logEvent('NFC_LIVE_READ', { recordTypes: techSummary.recordTypes, serialNumberPresent: techSummary.serialNumberPresent, classification: classification.classification }).catch(() => {});
+      });
+      if (!result.supported) this.setText('nfc-reader-status', 'Web NFC is unsupported in this browser; use manual classification instead.');
+      else if (result.error) this.setText('nfc-reader-status', `Live NFC reader error: ${result.error}`);
+      else this.setText('nfc-reader-status', 'Live NFC reader active (Web NFC).');
+      return result;
+    });
+  }
+
   async assessAssets() {
     return this.withAudit(async () => {
       const raw = document.getElementById('asset-inventory')?.value || '[]';
@@ -123,6 +143,7 @@ export class AppController {
 
   async calibrateThermal() {
     return this.withAudit(async () => {
+      this.adapter.calibrateThermalBaseline();
       const telemetry = await this.adapter.getSafeAuditTelemetry();
       if (!telemetry) throw new Error('Connect local hardware before calibration.');
       const baseline = this.thermalScanner.calibrate(telemetry.thermalGrid);
@@ -153,6 +174,24 @@ export class AppController {
       const result = await this.gpioMonitor.update(telemetry.gpio);
       await this.auditFirewall.logEvent('GPIO_STATUS', { doorContact: result.doorContact, pirMotion: result.pirMotion, vibrationTamper: result.vibrationTamper, activityOnly: result.activity });
       this.setText('gpio-monitor-status', `Door: ${result.doorContact ? 'closed' : 'open'} | PIR: ${result.pirMotion ? 'motion' : 'clear'} | Tamper: ${result.vibrationTamper ? 'alert' : 'clear'} | D0/D1 activity: ${result.activity.wiegandD0}/${result.activity.wiegandD1}`);
+      return result;
+    });
+  }
+
+  async handleToggleGpioLine(lineName) {
+    return this.withAudit(async () => {
+      const result = this.adapter.toggleGpioLine(lineName);
+      await this.auditFirewall.logEvent('GPIO_LINE_TOGGLE', { line: lineName, active: result.active, activity: result.activity });
+      await this.refreshGpio();
+      return result;
+    });
+  }
+
+  async handleSelfTest(moduleId) {
+    return this.withAudit(async () => {
+      const result = await this.adapter.triggerModuleSelfTest(moduleId);
+      await this.auditFirewall.logEvent('MODULE_SELF_TEST', result);
+      this.setText('gpio-monitor-status', `Self-test ${result.passed ? 'PASSED' : 'FAILED'} (${result.latencyMs}ms, run #${result.runCount}).`);
       return result;
     });
   }
@@ -246,7 +285,8 @@ export class AppController {
     if (!input) return;
     this.appendLlmLog(`User: ${input}`, 'user');
     try {
-      const result = await this.localLLM.executeUserCommand(input);
+      const context = { telemetry: this.latestTelemetry, gpio: this.adapter.getGpioSnapshot() };
+      const result = await this.localLLM.executeUserCommand(input, context);
       this.appendLlmLog(`Model: ${result.response}`, 'model');
       if (result.executed) {
         if (result.executed.status === 'CONFIRMATION_REQUIRED') {
@@ -269,7 +309,7 @@ export class AppController {
       if (!this.adapter.connected) return;
       const data = await this.adapter.sample();
       if (data) { this.renderTelemetry(data); this.firewall.generateAlert(data); }
-    }, 2000);
+    }, 1000);
   }
 
   renderTelemetry(data) {
@@ -278,9 +318,20 @@ export class AppController {
       this.setText('wifi-val', data.wifi.accessPoints);
       this.setText('ble-val', data.ble.devices);
       this.setText('nfc-val', data.nfc.eventsLast5Min);
+      this.updateTelemetryBadge(data.thermal);
+      this.latestTelemetry = data;
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
     else apply();
+  }
+
+  updateTelemetryBadge(thermal) {
+    const badge = document.getElementById('predicted-state-badge');
+    if (!badge) return;
+    badge.classList.remove('badge-ok', 'badge-warn', 'badge-critical');
+    if (thermal >= 38) badge.classList.add('badge-critical');
+    else if (thermal >= 32) badge.classList.add('badge-warn');
+    else badge.classList.add('badge-ok');
   }
 
   setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }

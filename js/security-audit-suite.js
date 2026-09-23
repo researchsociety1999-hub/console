@@ -4,6 +4,7 @@ export class NFCSecurityAuditor {
     const normalized = input.toLowerCase();
     if (/desfire\s*(ev3|ev2)|mifare plus|fido/.test(normalized)) return { classification: 'MODERN', risk: 'LOW', finding: 'Modern credential technology indicated. Maintain key-management and lifecycle review.', readOnly: true };
     if (/mifare classic|classic 1k|classic 4k|125\s*khz|prox/.test(normalized)) return { classification: 'LEGACY', risk: 'ELEVATED', finding: 'Legacy technology detected; recommend upgrading to DESFire EV3 or another modern, managed credential standard.', readOnly: true };
+    if (/iso\/?iec\s*14443-a|14443a/.test(normalized)) return { classification: 'REVIEW', risk: 'REVIEW', finding: 'ISO/IEC 14443-A compliant reader detected without specific chip identification; verify chip-level encryption (e.g., DESFire EV3) before relying on this credential technology.', readOnly: true };
     return { classification: 'UNKNOWN', risk: 'REVIEW', finding: 'Technology metadata is insufficient for classification. Record the reader-provided standard and review offline.', readOnly: true };
   }
 }
@@ -67,6 +68,22 @@ export class TSCMThermalScanner {
     offCtx.putImageData(imageData, 0, 0);
     ctx.clearRect(0, 0, width, height);
     if (offCanvas && offCanvas !== canvas) ctx.drawImage(offCanvas, 0, 0);
+
+    if (result?.anomalies?.length) {
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+      ctx.save();
+      ctx.strokeStyle = `rgba(255, 176, 32, ${0.4 + 0.4 * pulse})`;
+      ctx.lineWidth = 2;
+      result.anomalies.forEach((anomaly) => {
+        const cx = ((anomaly.index % columns) + 0.5) * cellWidth;
+        const cy = (Math.floor(anomaly.index / columns) + 0.5) * cellHeight;
+        const radius = Math.min(cellWidth, cellHeight) * (0.4 + 0.15 * pulse);
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+      ctx.restore();
+    }
   }
 }
 
@@ -103,6 +120,13 @@ export class OfflineAssetAuditor {
       if (asset?.credentialRotationNeeded) issues.push('Credential rotation is marked as required.');
       if (asset?.firmwareReviewNeeded) issues.push('Firmware review is marked as required.');
       if (asset?.segmentationReviewNeeded) issues.push('Network segmentation review is marked as required.');
+      if (asset?.lastCredentialRotationDate) {
+        const days = (Date.now() - new Date(asset.lastCredentialRotationDate).getTime()) / 86400000;
+        if (Number.isFinite(days) && days > 180) issues.push(`Credential rotation overdue (last rotated ${Math.round(days)} days ago; policy limit is 180 days).`);
+      }
+      if (asset?.firmwareVersion && asset?.minimumFirmwareVersion && String(asset.firmwareVersion) < String(asset.minimumFirmwareVersion)) {
+        issues.push(`Firmware ${asset.firmwareVersion} is below the minimum compliant version ${asset.minimumFirmwareVersion}.`);
+      }
       return { name, posture: issues.length ? 'REVIEW_REQUIRED' : 'NO_MANUAL_FINDING', issues };
     });
     return { assessedOffline: true, assetCount: findings.length, findings, reviewRequired: findings.filter((item) => item.posture === 'REVIEW_REQUIRED').length };
