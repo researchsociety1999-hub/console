@@ -111,6 +111,17 @@
           <button id="llm-execute-btn">Run Local Inference</button>
           <div id="llm-output-log" role="log" aria-live="polite"></div>
         </div>
+
+        <div id="llm-confirmation-modal" class="hidden-modal" role="alertdialog" aria-labelledby="confirmation-title" aria-hidden="true" style="display:none;">
+          <h3 id="confirmation-title">High-Privilege Action Requested</h3>
+          <div id="confirmation-details">No pending action.</div>
+          <label for="confirmation-passphrase">Vault passphrase (required for vault unlock)</label>
+          <input id="confirmation-passphrase" type="password" autocomplete="current-password">
+          <div class="confirmation-actions">
+            <button id="confirm-action-btn">Approve &amp; Execute</button>
+            <button id="cancel-action-btn">Deny &amp; Cancel</button>
+          </div>
+        </div>
       </section>
     </main>
   </div>

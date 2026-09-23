@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { DataFirewall, SecurityAuditFirewall } from '../js/data-firewall.js';
 import { JokerAdapter } from '../js/joker-adapter.js';
 import { NFCSecurityAuditor, TSCMThermalScanner, GPIOSecurityMonitor, OfflineAssetAuditor } from '../js/security-audit-suite.js';
@@ -126,6 +127,24 @@ describe('Local GGUF LLM Console Controller', () => {
     expect(appController.clearAuditSession).toHaveBeenCalled();
   });
 
+  it('fails and returns CONFIRMATION_REQUIRED for high-privilege actions when humanConfirmed is omitted or false', () => {
+    const llm = new LocalConsoleLLM({ appController: buildStubAppController() });
+    const omitted = llm.dispatchCommand({ action: 'ZEROIZE_ALL', params: {} });
+    expect(omitted.status).toBe('CONFIRMATION_REQUIRED');
+    const explicitFalse = llm.dispatchCommand({ action: 'UNLOCK_VAULT_SESSION', params: { humanConfirmed: false } });
+    expect(explicitFalse.status).toBe('CONFIRMATION_REQUIRED');
+  });
+
+  it('completes dispatch for zeroization and vault unlocking once humanConfirmed is true', () => {
+    const appController = buildStubAppController();
+    const llm = new LocalConsoleLLM({ appController });
+    const zeroize = llm.dispatchCommand({ action: 'ZEROIZE_ALL', params: { humanConfirmed: true } });
+    expect(zeroize.status).toBe('EXECUTED');
+    const unlock = llm.dispatchCommand({ action: 'UNLOCK_VAULT_SESSION', params: { humanConfirmed: true, passphrase: 'local-pass' } });
+    expect(unlock.status).toBe('EXECUTED');
+    expect(appController.handleVaultUnlock).toHaveBeenCalledWith('local-pass');
+  });
+
   it('requires explicit human confirmation before unlocking the vault via the model', () => {
     const appController = buildStubAppController();
     const llm = new LocalConsoleLLM({ appController });
@@ -135,6 +154,18 @@ describe('Local GGUF LLM Console Controller', () => {
     const confirmed = llm.dispatchCommand({ action: 'UNLOCK_VAULT_SESSION', params: { humanConfirmed: true } });
     expect(confirmed.status).toBe('EXECUTED');
     expect(appController.handleVaultUnlock).toHaveBeenCalled();
+  });
+
+  it('writes correct audit trail entries for human approval and denial of high-privilege actions', async () => {
+    const firewall = new SecurityAuditFirewall();
+    await firewall.verifyAuthorization('AUTH-2026-004', '123456', true);
+    const approved = await firewall.logEvent('HUMAN_APPROVED', { action: 'ZEROIZE_ALL', status: 'EXECUTED' });
+    const denied = await firewall.logEvent('HUMAN_DENIED', { action: 'UNLOCK_VAULT_SESSION' });
+    expect(approved.action).toBe('HUMAN_APPROVED');
+    expect(approved.metadata.action).toBe('ZEROIZE_ALL');
+    expect(denied.action).toBe('HUMAN_DENIED');
+    expect(firewall.auditLog.some((entry) => entry.action === 'HUMAN_APPROVED')).toBe(true);
+    expect(firewall.auditLog.some((entry) => entry.action === 'HUMAN_DENIED')).toBe(true);
   });
 
   it('clears the Wllama runtime reference on session unload', () => {
@@ -152,5 +183,12 @@ describe('Local GGUF LLM Console Controller', () => {
     const source = await import('../js/local-llm-controller.js');
     const sourceText = JSON.stringify(source);
     expect(sourceText).not.toMatch(/openai\.com|anthropic\.com|api\.[a-z]+\.com|sk-[a-zA-Z0-9]{20,}|https?:\/\//i);
+  });
+
+  it('contains no automatic bypass or remote override for the human-confirmation gate', () => {
+    const source = readFileSync(new URL('../js/local-llm-controller.js', import.meta.url), 'utf8');
+    expect(source).toMatch(/humanConfirmed\s*!==\s*true/);
+    expect(source).not.toMatch(/skipConfirmation|forceApprove|overrideConfirmation|bypassConfirmation/i);
+    expect(source).not.toMatch(/humanConfirmed\s*=\s*true\s*;?\s*\/\//i);
   });
 });

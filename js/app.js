@@ -17,6 +17,7 @@ export class AppController {
     this.assetAuditor = new OfflineAssetAuditor();
     this.localLLM = new LocalConsoleLLM({ appController: this, dataFirewall: this.auditFirewall });
     this.pollTimer = null;
+    this.pendingLlmAction = null;
   }
 
   createLocalVaultBridge() {
@@ -47,6 +48,8 @@ export class AppController {
     this.bind('clear-audit-session-btn', 'click', () => this.clearAuditSession());
     this.bind('gguf-file-input', 'change', (event) => this.handleGgufFileSelected(event));
     this.bind('llm-execute-btn', 'click', () => this.handleLlmExecute());
+    this.bind('confirm-action-btn', 'click', () => this.handleConfirmLlmAction());
+    this.bind('cancel-action-btn', 'click', () => this.handleCancelLlmAction());
   }
 
   bind(id, event, handler) {
@@ -67,8 +70,8 @@ export class AppController {
     }
   }
 
-  handleVaultUnlock() {
-    const pass = document.getElementById('vault-passphrase')?.value;
+  handleVaultUnlock(providedPassphrase) {
+    const pass = providedPassphrase ?? document.getElementById('vault-passphrase')?.value;
     if (pass) {
       this.vaultUnlocked = true;
       const statusEl = document.getElementById('vault-status');
@@ -194,21 +197,67 @@ export class AppController {
     }
   }
 
+  appendLlmLog(text, kind = 'info') {
+    const log = document.getElementById('llm-output-log');
+    if (!log) return;
+    const line = document.createElement('div');
+    line.textContent = text;
+    line.className = `llm-log-${kind}`;
+    log.appendChild(line);
+  }
+
+  showLlmConfirmationModal(pending) {
+    this.pendingLlmAction = pending;
+    this.setText('confirmation-details', `Action: ${pending.action}\nParams: ${JSON.stringify(pending.params || {})}`);
+    const modal = document.getElementById('llm-confirmation-modal');
+    if (modal) { modal.classList.remove('hidden-modal'); modal.setAttribute('aria-hidden', 'false'); modal.style.display = 'block'; }
+  }
+
+  hideLlmConfirmationModal() {
+    const modal = document.getElementById('llm-confirmation-modal');
+    if (modal) { modal.classList.add('hidden-modal'); modal.setAttribute('aria-hidden', 'true'); modal.style.display = 'none'; }
+    this.pendingLlmAction = null;
+    const passInput = document.getElementById('confirmation-passphrase');
+    if (passInput) passInput.value = '';
+  }
+
+  async handleConfirmLlmAction() {
+    if (!this.pendingLlmAction) { this.hideLlmConfirmationModal(); return; }
+    const pending = this.pendingLlmAction;
+    const passphrase = document.getElementById('confirmation-passphrase')?.value || '';
+    const params = { ...(pending.params || {}), humanConfirmed: true };
+    if (pending.action === 'UNLOCK_VAULT_SESSION') params.passphrase = passphrase;
+    const result = this.localLLM.dispatchCommand({ action: pending.action, params });
+    await this.auditFirewall.logEvent('HUMAN_APPROVED', { action: pending.action, status: result.status }).catch(() => {});
+    this.appendLlmLog(`[Approved] ${pending.action} -> ${result.status}`, 'success');
+    this.hideLlmConfirmationModal();
+  }
+
+  async handleCancelLlmAction() {
+    if (!this.pendingLlmAction) { this.hideLlmConfirmationModal(); return; }
+    const pending = this.pendingLlmAction;
+    await this.auditFirewall.logEvent('HUMAN_DENIED', { action: pending.action }).catch(() => {});
+    this.appendLlmLog(`[Denied] ${pending.action} was blocked by the user.`, 'blocked');
+    this.hideLlmConfirmationModal();
+  }
+
   async handleLlmExecute() {
     const input = document.getElementById('llm-command-input')?.value?.trim();
     if (!input) return;
-    const log = document.getElementById('llm-output-log');
-    const appendLine = (text) => { if (log) { const line = document.createElement('div'); line.textContent = text; log.appendChild(line); } };
-    appendLine(`User: ${input}`);
+    this.appendLlmLog(`User: ${input}`, 'user');
     try {
       const result = await this.localLLM.executeUserCommand(input);
-      appendLine(`Model: ${result.response}`);
+      this.appendLlmLog(`Model: ${result.response}`, 'model');
       if (result.executed) {
-        appendLine(`[Tool: ${result.executed.action || 'none'} -> ${result.executed.status}]`);
-        await this.auditFirewall.logEvent('LLM_TOOL_RESULT', { action: result.executed.action, status: result.executed.status }).catch(() => {});
+        if (result.executed.status === 'CONFIRMATION_REQUIRED') {
+          this.showLlmConfirmationModal(result.executed);
+        } else {
+          this.appendLlmLog(`[Tool: ${result.executed.action || 'none'} -> ${result.executed.status}]`, 'success');
+          await this.auditFirewall.logEvent('LLM_TOOL_RESULT', { action: result.executed.action, status: result.executed.status }).catch(() => {});
+        }
       }
     } catch (error) {
-      appendLine(`Error: ${error.message}`);
+      this.appendLlmLog(`Error: ${error.message}`, 'error');
     }
     const commandInput = document.getElementById('llm-command-input');
     if (commandInput) commandInput.value = '';
