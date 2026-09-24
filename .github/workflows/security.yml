@@ -27,7 +27,7 @@ jobs:
 
       - name: Check for Unintended Secrets or Credentials
         run: |
-          if grep -riE "(AIzaSy|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36})" .; then
+          if grep -riE --exclude-dir=.git --exclude-dir=.github --exclude-dir=node_modules "(AIzaSy|sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36})" .; then
             echo "ERROR: Potential API key or credential string detected!"
             exit 1
           fi
