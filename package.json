@@ -2,8 +2,18 @@
   "name": "console",
   "version": "1.0.0",
   "private": true,
+  "description": "Console PWA for local-first hardware monitoring",
   "type": "module",
-  "scripts": { "dev": "npx http-server . -p 3000 -a 0.0.0.0 --cors", "start": "npx http-server . -p 3000 -a 0.0.0.0 --cors", "test": "vitest run" },
-  "devDependencies": { "http-server": "^14.1.1", "vitest": "^2.1.8" },
-  "dependencies": { "@wllama/wllama": "^3.6.1" }
+  "scripts": {
+    "dev": "npx http-server . -p 3000 -a 0.0.0.0 --cors",
+    "start": "npx http-server . -p 3000 -a 0.0.0.0 --cors",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@wllama/wllama": "^3.6.1"
+  }
 }

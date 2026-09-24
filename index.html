@@ -1,6 +1,135 @@
-  // Legacy compatibility controls retained for the core regression contract.
-  <div id="legacy-controls" hidden>
-    <button id="connect"></button><button id="ghost"></button><button id="diagnostic"></button>
-    <button id="stateBtn"></button><input id="stealthToggle"><input id="killDeviceToggle">
-    <button id="applyConnectionProfile"></button><button id="exportIntel"></button><button id="clearVault"></button><button id="unlockVault"></button>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AEGIS Tactical Console</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="aegis-header">
+      <div class="header-readouts">
+        <span id="predicted-state-badge">INITIALIZING</span>
+        <span>AEGIS TACTICAL INTERFACE</span>
+      </div>
+      <div class="header-readouts">
+        <span id="battery-status">BATT: LOCAL</span>
+        <span id="signal-status">LINK: --</span>
+        <button id="connect-btn">Connect</button>
+        <button id="header-emergency-lock-btn">Emergency Lock</button>
+      </div>
+    </header>
+
+    <main id="aegis-viewport">
+      <section id="thermal-recon-panel" aria-labelledby="thermal-recon-title">
+        <h2 id="thermal-recon-title">Thermal Recon</h2>
+        <canvas id="thermal-display" width="260" height="260" aria-label="Local thermal heat-map display"></canvas>
+        <div class="metric"><span class="label">Temp:</span> <span id="temp-val">--</span> °C</div>
+        <label for="thermal-threshold">Anomaly threshold (°C)</label>
+        <input id="thermal-threshold" type="number" min="0.1" step="0.1" value="2.5">
+        <button id="calibrate-thermal-btn">Calibrate Baseline</button>
+        <button id="scan-thermal-btn">Analyze Grid</button>
+        <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated. Heuristic overlay labels (Human / Electronics / Baseline) are advisory pattern estimates, not confirmed detections.</div>
+      </section>
+
+      <section id="active-alerts-panel" aria-labelledby="active-alerts-title">
+        <h2 id="active-alerts-title">Active Alerts</h2>
+        <div id="alert-stream" role="log" aria-live="polite"></div>
+      </section>
+
+      <section id="network-matrix-panel" aria-labelledby="network-matrix-title">
+        <h2 id="network-matrix-title">Network Matrix (Local, Non-RF-Capture)</h2>
+        <canvas id="radar-display" width="260" height="260" aria-label="Local device radar display"></canvas>
+        <div class="metric"><span class="label">Wi-Fi APs:</span> <span id="wifi-val">--</span></div>
+        <div class="metric"><span class="label">BLE Devices:</span> <span id="ble-val">--</span></div>
+      </section>
+
+      <section id="nfc-center-panel" aria-labelledby="nfc-center-title">
+        <h2 id="nfc-center-title">NFC Center</h2>
+        <div class="metric"><span class="label">NFC Events:</span> <span id="nfc-val">--</span></div>
+        <label for="nfc-technology">Tag technology / metadata</label>
+        <input id="nfc-technology" type="text" placeholder="e.g., MIFARE Classic, DESFire EV3">
+        <button id="classify-nfc-btn">Classify Technology</button>
+        <div id="nfc-audit-result" role="status" aria-live="polite">Awaiting authorized input.</div>
+        <div id="nfc-posture-meter"><div id="nfc-posture-meter-fill"></div></div>
+        <div id="nfc-sector-map">Sector-level structure unavailable in read-only mode.</div>
+        <button id="start-nfc-reader-btn">Start Live NFC Reader (Web NFC)</button>
+        <div id="nfc-reader-status" role="status" aria-live="polite">Live NFC reader inactive.</div>
+      </section>
+
+      <section id="device-control-panel" aria-labelledby="device-control-title">
+        <h2 id="device-control-title">Device Control</h2>
+        <button id="refresh-gpio-btn">Refresh Physical States</button>
+        <button id="toggle-door-btn">Toggle Door Contact</button>
+        <button id="toggle-pir-btn">Toggle PIR Motion</button>
+        <button id="toggle-tamper-btn">Toggle Tamper Sensor</button>
+        <button id="run-self-test-btn">Run GPIO Self-Test</button>
+        <div id="gpio-monitor-status" role="status" aria-live="polite">No physical state sampled.</div>
+      </section>
+
+      <section id="fleet-status-panel" aria-labelledby="fleet-status-title">
+        <h2 id="fleet-status-title">Fleet Status (Local Node)</h2>
+        <div id="fleet-device-list" role="status" aria-live="polite">No node data.</div>
+        <label for="asset-inventory">Offline asset inventory JSON</label>
+        <textarea id="asset-inventory" rows="3" placeholder='[{"name":"Camera-01","credentialRotationNeeded":true}]'></textarea>
+        <button id="assess-assets-btn">Assess Offline Inventory</button>
+        <div id="asset-audit-result" role="status" aria-live="polite">No inventory assessed.</div>
+      </section>
+
+      <section id="audit-compliance-panel" aria-labelledby="audit-compliance-title">
+        <h2 id="audit-compliance-title">Audit &amp; Compliance</h2>
+
+        <h3>Local Encrypted Vault</h3>
+        <input type="password" id="vault-passphrase" placeholder="Passphrase" autocomplete="current-password">
+        <button id="vault-unlock-btn">Unlock Vault</button>
+        <div id="vault-status" role="status" aria-live="polite">Locked</div>
+
+        <h3>Authorization</h3>
+        <input id="auth-reference" type="text" placeholder="e.g., AUTH-2026-001" autocomplete="off">
+        <input id="admin-pin" type="password" placeholder="Local passphrase" autocomplete="current-password">
+        <label><input id="research-ack" type="checkbox"> I confirm this assessment is authorized and read-only.</label>
+        <button id="verify-authorization-btn">Verify Authorization</button>
+        <div id="authorization-status" role="status" aria-live="polite">Locked: authorization required.</div>
+
+        <h3>Export &amp; Zeroize</h3>
+        <button id="export-compliance-btn">Export Local Compliance Report</button>
+        <button id="clear-audit-session-btn">Clear Audit Session</button>
+
+        <div id="local-llm-panel" aria-labelledby="local-llm-title">
+          <h3 id="local-llm-title">Local LLM Controller</h3>
+          <input id="gguf-file-input" type="file" accept=".gguf" hidden>
+          <label for="gguf-file-input"><button type="button" id="select-gguf-btn">Select Local GGUF Model</button></label>
+          <div id="model-loading-status" role="status" aria-live="polite">No model loaded.</div>
+          <div id="llm-console-interface" class="disabled-panel" aria-disabled="true">
+            <textarea id="llm-command-input" rows="2" placeholder="Local instruction…"></textarea>
+            <button id="llm-execute-btn">Run Local Inference</button>
+            <div id="llm-output-log" role="log" aria-live="polite"></div>
+          </div>
+          <div id="llm-confirmation-modal" class="hidden-modal" role="alertdialog" aria-labelledby="confirmation-title" aria-hidden="true" style="display:none;">
+            <h3 id="confirmation-title">High-Privilege Action Requested</h3>
+            <div id="confirmation-details">No pending action.</div>
+            <input id="confirmation-passphrase" type="password" autocomplete="current-password">
+            <button id="confirm-action-btn">Approve &amp; Execute</button>
+            <button id="cancel-action-btn">Deny &amp; Cancel</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer id="command-bar">
+      <button id="emergency-btn">🔥 EMERGENCY</button>
+      <button id="scan-all-btn">📡 SCAN ALL</button>
+      <button id="lockdown-btn">🔒 LOCKDOWN</button>
+      <button id="command-export-btn">📊 EXPORT</button>
+      <label for="theme-select">⚙️ THEME</label>
+      <select id="theme-select">
+        <option value="operator">Operator (Amber/Black)</option>
+        <option value="tactical">Tactical (Olive/Red)</option>
+        <option value="clinical">Clinical (High-Contrast)</option>
+      </select>
+    </footer>
   </div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

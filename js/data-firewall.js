@@ -51,7 +51,7 @@ export function isActionApproved(action) {
 
 export async function dispatchApprovedCommand(adapter, action, params = {}) {
   if (!isActionApproved(action)) throw new Error('Action is not approved.');
-  const handlers = { RGB_MODE: () => adapter.setRgbMode(params.mode), BUZZER_TONE: () => adapter.sendBuzzerTone(params), GPIO_SET: () => adapter.setGpioPin(params.pin, params.value), MODULE_RESTART: () => adapter.restartModule(params.moduleId) };
+  const handlers = { RGB_MODE: () => adapter.setRgbMode(params.mode), BUZZER_TONE: () => adapter.sendBuzzerTone(params.frequency, params.duration), GPIO_SET: () => adapter.setGpioPin(params.pin, params.value), MODULE_RESTART: () => adapter.restartModule(params.moduleId) };
   return handlers[action]();
 }
 
@@ -63,19 +63,89 @@ export function runDataFirewall(packet, context = {}) {
 
 export class DataFirewall {
   constructor() { this.alerts = []; }
+
   generateAlert(telemetry) {
     const alerts = [];
     if (telemetry.thermal > 40.0) alerts.push({ level: 'CRITICAL', type: 'THERMAL_EXCEEDED', value: telemetry.thermal });
     if (telemetry.nfc && telemetry.nfc.eventsLast5Min > 10) alerts.push({ level: 'HIGH', type: 'NFC_BURST', value: telemetry.nfc.eventsLast5Min });
-    this.alerts.push(...alerts); return alerts;
+    this.alerts.push(...alerts);
+    return alerts;
   }
 }
 
 export class SecurityAuditFirewall extends DataFirewall {
-  constructor({ vault = null, expectedPin = null } = {}) { super(); this.vault = vault; this.expectedPin = expectedPin; this.authorized = false; this.authorizationReference = null; this.auditLog = []; this.previousHash = 'GENESIS'; this.transientKey = null; }
-  sanitizeMetadata(value) { const pattern = /(pin|pass(word|phrase)?|secret|token|credential|key|payload|uid|card.?data)/i; if (Array.isArray(value)) return value.map((item) => this.sanitizeMetadata(item)); if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, pattern.test(key) ? '[REDACTED]' : this.sanitizeMetadata(item)])); if (typeof value === 'string' && value.length > 512) return '[TRUNCATED]'; return value; }
-  async verifyAuthorization(authTicket, adminPIN, acknowledged = false) { const ticket = String(authTicket || '').trim(); const pin = String(adminPIN || ''); const valid = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(ticket) && pin.length >= 6 && pin.length <= 256 && (!this.expectedPin || pin === this.expectedPin); if (!acknowledged || !valid) return { authorized: false, reason: 'A valid local ticket, passphrase, and acknowledgment are required.' }; this.authorized = true; this.authorizationReference = ticket; this.transientKey = await sha256(`${ticket}:${Date.now()}:${Math.random()}`); await this.logEvent('SESSION_START', { acknowledgment: true, authorizationTicket: ticket }); return { authorized: true, reference: ticket }; }
-  async logEvent(action, data = {}) { if (!this.authorized && action !== 'SESSION_START') throw new Error('Audit session is locked. Verify authorization first.'); const entry = { timestamp: new Date().toISOString(), action: String(action || 'UNSPECIFIED').replace(/[^A-Z0-9_:-]/gi, '_').slice(0, 96), authorizationReference: this.authorizationReference, metadata: this.sanitizeMetadata(data), previousHash: this.previousHash }; entry.integrityHash = await sha256(stableStringify(entry)); this.previousHash = entry.integrityHash; this.auditLog.push(entry); if (this.vault?.isUnlocked && typeof this.vault.store === 'function') await this.vault.store({ type: 'AUDIT_EVENT', ...entry }); return entry; }
-  async generateComplianceReport() { const report = { generatedAt: new Date().toISOString(), localOnly: true, authorizationReference: this.authorizationReference, eventCount: this.auditLog.length, events: this.auditLog.map((entry) => ({ ...entry })), exclusions: ['No network discovery', 'No credential probing', 'No card writing or cloning', 'No relay simulation', 'No Wiegand payload capture'] }; report.integrityHash = await sha256(stableStringify(report)); return report; }
-  sessionClear() { this.authorized = false; this.authorizationReference = null; this.auditLog = []; this.previousHash = 'GENESIS'; this.transientKey = null; }
+  constructor({ vault = null, expectedPin = null } = {}) {
+    super();
+    this.vault = vault;
+    this.expectedPin = expectedPin;
+    this.authorized = false;
+    this.authorizationReference = null;
+    this.auditLog = [];
+    this.previousHash = 'GENESIS';
+    this.transientKey = null;
+  }
+
+  sanitizeMetadata(value) {
+    const secretPattern = /(pin|pass(word|phrase)?|secret|token|credential|key|payload|uid|card.?data)/i;
+    if (Array.isArray(value)) return value.map((item) => this.sanitizeMetadata(item));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, secretPattern.test(key) ? '[REDACTED]' : this.sanitizeMetadata(item)]));
+    }
+    if (typeof value === 'string' && value.length > 512) return '[TRUNCATED]';
+    return value;
+  }
+
+  async verifyAuthorization(authTicket, adminPIN, acknowledged = false) {
+    const ticket = String(authTicket || '').trim();
+    const pin = String(adminPIN || '');
+    const validTicket = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(ticket);
+    const validPin = pin.length >= 6 && pin.length <= 256 && (!this.expectedPin || pin === this.expectedPin);
+    if (!acknowledged || !validTicket || !validPin) return { authorized: false, reason: 'A valid local ticket, passphrase, and acknowledgment are required.' };
+    this.authorized = true;
+    this.authorizationReference = ticket;
+    this.transientKey = await sha256(`${ticket}:${Date.now()}:${Math.random()}`);
+    await this.logEvent('SESSION_START', { acknowledgment: true, authorizationTicket: ticket });
+    return { authorized: true, reference: ticket };
+  }
+
+  async logEvent(action, data = {}) {
+    if (!this.authorized && action !== 'SESSION_START') throw new Error('Audit session is locked. Verify authorization first.');
+    const entry = {
+      timestamp: new Date().toISOString(),
+      action: String(action || 'UNSPECIFIED').replace(/[^A-Z0-9_:-]/gi, '_').slice(0, 96),
+      authorizationReference: this.authorizationReference,
+      metadata: this.sanitizeMetadata(data),
+      previousHash: this.previousHash
+    };
+    entry.integrityHash = await sha256(stableStringify(entry));
+    this.previousHash = entry.integrityHash;
+    this.auditLog.push(entry);
+    if (this.vault?.isUnlocked && typeof this.vault.store === 'function') await this.vault.store({ type: 'AUDIT_EVENT', ...entry });
+    return entry;
+  }
+
+  async generateComplianceReport() {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      localOnly: true,
+      authorizationReference: this.authorizationReference,
+      eventCount: this.auditLog.length,
+      controls: {
+        iso27001: ['A.5.15 Access control', 'A.5.24 Information security incident management', 'A.7.5 Physical security monitoring', 'A.8.9 Configuration management'],
+        nist80053: ['AC-3 Access Enforcement', 'AU-2 Event Logging', 'AU-9 Protection of Audit Information', 'PE-3 Physical Access Control', 'SI-4 System Monitoring']
+      },
+      events: this.auditLog.map((entry) => ({ ...entry })),
+      exclusions: ['No network discovery', 'No credential probing', 'No card writing or cloning', 'No relay simulation', 'No Wiegand payload capture']
+    };
+    report.integrityHash = await sha256(stableStringify(report));
+    return report;
+  }
+
+  sessionClear() {
+    this.authorized = false;
+    this.authorizationReference = null;
+    this.auditLog = [];
+    this.previousHash = 'GENESIS';
+    this.transientKey = null;
+  }
 }
