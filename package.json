@@ -11,7 +11,7 @@
   },
   "devDependencies": {
     "http-server": "^14.1.1",
-    "vitest": "^2.1.8"
+    "vitest": "^5.0.1"
   },
   "dependencies": {
     "@wllama/wllama": "^3.6.1"
