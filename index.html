@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0800">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AEGIS">
+  <link rel="manifest" href="manifest.json">
   <title>AEGIS Tactical Console</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -30,7 +35,7 @@
         <input id="thermal-threshold" type="number" min="0.1" step="0.1" value="2.5">
         <button id="calibrate-thermal-btn">Calibrate Baseline</button>
         <button id="scan-thermal-btn">Analyze Grid</button>
-        <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated. Heuristic overlay labels (Human / Electronics / Baseline) are advisory pattern estimates, not confirmed detections.</div>
+        <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated. Heuristic overlay labels (Human / Electronics / Baseline) are advisory pattern estimates, not confirmed sensor truth.</div>
       </section>
 
       <section id="active-alerts-panel" aria-labelledby="active-alerts-title">
@@ -131,5 +136,6 @@
     </footer>
   </div>
   <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/responsive-layout.js"></script>
 </body>
 </html>

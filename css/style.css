@@ -24,15 +24,21 @@ html, body {
   color: var(--text-main);
   font-family: var(--font-ui);
   height: 100%;
+  overflow: hidden;
 }
 
 #app {
   height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.6rem;
+  padding-top: max(0.6rem, env(safe-area-inset-top));
+  padding-left: max(0.6rem, env(safe-area-inset-left));
+  padding-right: max(0.6rem, env(safe-area-inset-right));
+  padding-bottom: max(0.6rem, env(safe-area-inset-bottom));
 }
 
 button {
@@ -44,7 +50,10 @@ button {
   padding: 0.4rem 0.7rem;
   cursor: pointer;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  min-height: 44px;
+  touch-action: manipulation;
 }
+
 button:hover { border-color: var(--accent-cyber-dim); }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: none;
@@ -60,6 +69,7 @@ input, textarea, select {
   border-radius: var(--radius-md);
   padding: 0.35rem 0.5rem;
   font-size: 0.8rem;
+  touch-action: manipulation;
 }
 
 #aegis-header {
@@ -72,6 +82,7 @@ input, textarea, select {
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   background: var(--bg-panel);
+  flex-wrap: wrap;
 }
 
 #aegis-header h1 {
@@ -82,7 +93,14 @@ input, textarea, select {
   margin: 0;
 }
 
-#aegis-header .header-readouts { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--text-dim); }
+#aegis-header .header-readouts {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  align-items: center;
+  flex-wrap: wrap;
+}
 
 #predicted-state-badge {
   font-size: 0.75rem;
@@ -152,6 +170,7 @@ input, textarea, select {
   will-change: transform, opacity;
   transform: translateZ(0);
   background: #04120a;
+  margin: 0 auto;
 }
 
 #alert-stream {
@@ -209,6 +228,7 @@ input, textarea, select {
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   background: var(--bg-panel);
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 }
 
 #emergency-btn, #header-emergency-lock-btn { border-color: var(--accent-critical); color: var(--accent-critical); }
@@ -218,7 +238,19 @@ input, textarea, select {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--accent-cyber-dim); border-radius: 8px; }
 
-@media (max-width: 900px) {
-  #aegis-viewport { grid-template-columns: 1fr 1fr; grid-template-areas: "thermal network" "alerts nfc" "device fleet" "audit audit"; }
-  #app { height: auto; overflow: auto; }
+@media (max-width: 640px) {
+  html, body { font-size: 14px; }
+
+  #app { padding: 0.4rem; }
+
+  button { font-size: 0.75rem; }
+  input, textarea, select { font-size: 0.75rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
