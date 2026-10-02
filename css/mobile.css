@@ -1,0 +1,263 @@
+/* Mobile-first responsive overrides for phone/tablet */
+
+/* === Phone: < 480px === */
+@media (max-width: 480px) {
+  html, body {
+    font-size: 14px; /* Default base for better touch targets */
+  }
+
+  #app {
+    height: 100dvh; /* Dynamic viewport height (accounts for mobile UI) */
+    gap: 0.25rem;
+    padding: 0.4rem;
+  }
+
+  #aegis-header {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.4rem;
+  }
+
+  #aegis-header .header-readouts {
+    gap: 0.35rem;
+    font-size: 0.65rem;
+    flex: 1 1 auto;
+  }
+
+  #aegis-header button {
+    flex: 0 1 auto;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.65rem;
+    min-width: 44px; /* Touch-friendly minimum */
+    min-height: 44px;
+  }
+
+  /* Stack viewport to single-column layout */
+  #aegis-viewport {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "thermal"
+      "alerts"
+      "network"
+      "nfc"
+      "device"
+      "fleet"
+      "audit";
+    gap: 0.25rem;
+  }
+
+  /* All panels */
+  section {
+    padding: 0.35rem;
+    font-size: 0.7rem;
+  }
+
+  /* Canvas elements: scale to screen width */
+  #thermal-display, #radar-display {
+    width: 100%;
+    max-width: none;
+    height: auto;
+    aspect-ratio: 1;
+  }
+
+  button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.7rem;
+  }
+
+  input, textarea, select {
+    font-size: 0.7rem;
+    padding: 0.3rem 0.4rem;
+  }
+
+  textarea {
+    max-width: 100%;
+  }
+
+  /* Reduce text sizes for small screens */
+  section h2, section h3 {
+    font-size: 0.8rem;
+    margin: 0.2rem 0;
+  }
+
+  .label {
+    font-size: 0.65rem;
+  }
+
+  /* Scrollable panels */
+  section {
+    min-height: 180px;
+  }
+
+  #command-bar {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.35rem;
+  }
+
+  #command-bar button, #command-bar select {
+    flex: 1 1 auto;
+    min-width: 40px;
+    font-size: 0.65rem;
+  }
+
+  #command-bar label {
+    font-size: 0.65rem;
+  }
+}
+
+/* === Tablet: 480px – 900px === */
+@media (min-width: 481px) and (max-width: 900px) {
+  html, body {
+    font-size: 15px;
+  }
+
+  #app {
+    height: 100dvh;
+    gap: 0.35rem;
+    padding: 0.5rem;
+  }
+
+  #aegis-viewport {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto auto;
+    grid-template-areas:
+      "thermal alerts"
+      "network nfc"
+      "device fleet"
+      "audit audit";
+    gap: 0.35rem;
+  }
+
+  section {
+    padding: 0.45rem;
+    font-size: 0.75rem;
+  }
+
+  #thermal-display, #radar-display {
+    max-width: 100%;
+    aspect-ratio: 1;
+  }
+
+  button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0.35rem 0.6rem;
+  }
+
+  input, textarea, select {
+    font-size: 0.75rem;
+  }
+
+  section h2, section h3 {
+    font-size: 0.82rem;
+  }
+}
+
+/* === Desktop: > 900px === */
+@media (min-width: 901px) {
+  html, body {
+    font-size: 16px;
+  }
+
+  #app {
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  #aegis-viewport {
+    grid-template-columns: 1fr 1fr 1fr 0.95fr;
+    grid-template-rows: 1fr 1fr;
+    grid-template-areas:
+      "thermal alerts network audit"
+      "nfc device fleet audit";
+    gap: 0.5rem;
+    overflow: hidden;
+  }
+
+  section {
+    padding: 0.55rem;
+    font-size: 0.78rem;
+  }
+
+  button, input, textarea, select {
+    font-size: 0.8rem;
+  }
+}
+
+/* === Orientation lock (portrait for mobile) === */
+@media (max-width: 480px) and (orientation: landscape) {
+  #app {
+    flex-direction: row;
+    gap: 0.25rem;
+  }
+
+  #aegis-header {
+    flex: 0 0 auto;
+    min-width: 120px;
+  }
+
+  #aegis-viewport {
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
+
+  #command-bar {
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 120px;
+  }
+}
+
+/* === Notch / Safe area support === */
+@supports (padding: max(0px)) {
+  #app {
+    padding-top: max(0.6rem, env(safe-area-inset-top));
+    padding-left: max(0.6rem, env(safe-area-inset-left));
+    padding-right: max(0.6rem, env(safe-area-inset-right));
+    padding-bottom: max(0.6rem, env(safe-area-inset-bottom));
+  }
+
+  #command-bar {
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+}
+
+/* === Touch interaction improvements === */
+@media (hover: none) and (pointer: coarse) {
+  /* Touch devices: larger buttons */
+  button {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0.5rem 0.8rem;
+    -webkit-tap-highlight-color: rgba(255, 176, 32, 0.2);
+  }
+
+  input, textarea, select {
+    padding: 0.4rem 0.6rem;
+    font-size: 16px; /* Prevents zoom on iOS input focus */
+  }
+
+  /* Active state for touch */
+  button:active {
+    background: var(--bg-panel);
+    border-color: var(--accent-cyber);
+  }
+
+  /* Prevent double-tap zoom on buttons */
+  button, input, textarea, select {
+    touch-action: manipulation;
+  }
+}
+
+/* === Reduce motion for users who prefer it === */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
