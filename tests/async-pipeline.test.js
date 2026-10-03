@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as P from '../js/async-pipeline.js';
+import { AppController } from '../js/app.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const good = JSON.stringify({ ai_narrative: 'a', suggested_severity: 'high', final_action_type: 'lockdown', refined_prediction: 'p', recommendation_text: 'r', root_cause_summary: 'c' });
@@ -58,12 +59,58 @@ describe('async monitoring pipeline', () => {
       publishReasoning: (x) => reas.push(x),
       detectAlert: (s) => (s.thermal > 40 ? { id: s.thermal, severity: 'CRITICAL' } : null),
       complete: () => new Promise(() => {}),
-      dispatchDeps: {}
+      dispatchDeps: {},
     });
     p.sampleIn({ thermal: 45 });
     p.sampleIn({ thermal: 30 });
     await p.queue.flush();
     expect(tele.length).toBe(2);
     expect(reas.length).toBe(0);
+  });
+
+  it('integrates the monitoring pipeline into the app controller and renders LLM reasoning', async () => {
+    document.body.innerHTML = `
+      <div id="thermal-grid"></div>
+      <div id="radar-target-list"></div>
+      <div id="trust-score-badge"></div>
+      <div id="adapter-state-indicator"></div>
+      <div id="llm-state-indicator"></div>
+      <div id="audit-compliance-panel"></div>
+      <div id="alert-stream"></div>
+      <div id="llm-confirmation-modal" style="display:none;"></div>
+      <div id="confirmation-details"></div>
+      <div id="llm-console-interface"></div>
+      <div id="predicted-state-badge"></div>
+      <div id="temp-val"></div>
+      <div id="wifi-val"></div>
+      <div id="ble-val"></div>
+      <div id="nfc-val"></div>
+      <div id="fleet-device-list"></div>
+      <div id="radar-display"></div>
+      <div id="authorization-status"></div>
+      <div id="thermal-display"></div>
+    `;
+
+    const app = new AppController();
+    app.auditFirewall.authorized = true;
+    app.localLLM.loaded = true;
+    app.localLLM.wllama = {
+      createCompletion: async () => JSON.stringify({
+        ai_narrative: 'Thermal reading is elevated and requires review.',
+        suggested_severity: 'HIGH',
+        final_action_type: 'MONITOR',
+        refined_prediction: 'WATCH',
+        recommendation_text: 'Review the thermal trend.',
+        root_cause_summary: 'Thermal rise',
+      }),
+    };
+
+    const pipeline = app.createMonitoringPipeline();
+    pipeline.sampleIn({ thermal: 45, wifi: { accessPoints: 2 }, ble: { devices: 1 }, nfc: { eventsLast5Min: 12 } });
+    await pipeline.queue.flush();
+
+    expect(document.getElementById('thermal-grid').textContent).toContain('45');
+    expect(document.getElementById('llm-state-indicator').textContent).toBe('LLM');
+    expect(document.getElementById('audit-compliance-panel').textContent).toContain('Thermal');
   });
 });

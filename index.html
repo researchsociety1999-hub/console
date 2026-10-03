@@ -25,12 +25,13 @@
       <section id="thermal-recon-panel" aria-labelledby="thermal-recon-title">
         <h2 id="thermal-recon-title">Thermal Recon</h2>
         <canvas id="thermal-display" width="260" height="260" aria-label="Local thermal heat-map display"></canvas>
+        <div id="thermal-grid" aria-live="polite">--</div>
         <div class="metric"><span class="label">Temp:</span> <span id="temp-val">--</span> °C</div>
         <label for="thermal-threshold">Anomaly threshold (°C)</label>
         <input id="thermal-threshold" type="number" min="0.1" step="0.1" value="2.5">
         <button id="calibrate-thermal-btn">Calibrate Baseline</button>
         <button id="scan-thermal-btn">Analyze Grid</button>
-        <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated. Heuristic overlay labels (Human / Electronics / Baseline) are advisory pattern estimates, not confirmed detections.</div>
+        <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated. Heuristic overlay labels (Human / Electronics / Baseline) are advisory pattern estimates, not configuration guarantees.</div>
       </section>
 
       <section id="active-alerts-panel" aria-labelledby="active-alerts-title">
@@ -41,6 +42,7 @@
       <section id="network-matrix-panel" aria-labelledby="network-matrix-title">
         <h2 id="network-matrix-title">Network Matrix (Local, Non-RF-Capture)</h2>
         <canvas id="radar-display" width="260" height="260" aria-label="Local device radar display"></canvas>
+        <div id="radar-target-list" aria-live="polite">--</div>
         <div class="metric"><span class="label">Wi-Fi APs:</span> <span id="wifi-val">--</span></div>
         <div class="metric"><span class="label">BLE Devices:</span> <span id="ble-val">--</span></div>
       </section>
@@ -71,6 +73,8 @@
       <section id="fleet-status-panel" aria-labelledby="fleet-status-title">
         <h2 id="fleet-status-title">Fleet Status (Local Node)</h2>
         <div id="fleet-device-list" role="status" aria-live="polite">No node data.</div>
+        <div id="trust-score-badge" aria-live="polite">100</div>
+        <div id="adapter-state-indicator" aria-live="polite">DISCONNECTED</div>
         <label for="asset-inventory">Offline asset inventory JSON</label>
         <textarea id="asset-inventory" rows="3" placeholder='[{"name":"Camera-01","credentialRotationNeeded":true}]'></textarea>
         <button id="assess-assets-btn">Assess Offline Inventory</button>
@@ -95,6 +99,7 @@
         <h3>Export &amp; Zeroize</h3>
         <button id="export-compliance-btn">Export Local Compliance Report</button>
         <button id="clear-audit-session-btn">Clear Audit Session</button>
+        <div id="llm-state-indicator" aria-live="polite">FALLBACK</div>
 
         <div id="local-llm-panel" aria-labelledby="local-llm-title">
           <h3 id="local-llm-title">Local LLM Controller</h3>
