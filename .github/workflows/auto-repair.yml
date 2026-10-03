@@ -1,0 +1,57 @@
+name: Auto Repair & Lockfile Sync
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies & Update Lockfile
+        run: |
+          npm install @wllama/wllama@^3.6.0
+
+      - name: Guard Top-Level DOM Access in js/app.js
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("js/app.js")) process.exit(0);
+            let content = fs.readFileSync("js/app.js", "utf8");
+            
+            // Guard top-level DOMContentLoaded
+            if (content.includes("DOMContentLoaded") && !content.includes("typeof document")) {
+              content = content.replace(
+                /document\.addEventListener\(\s*[\x27\x22]DOMContentLoaded[\x27\x22]\s*,/g,
+                "if (typeof document !== \"undefined\") {\n  document.addEventListener(\"DOMContentLoaded\","
+              );
+              content += "\n}";
+              fs.writeFileSync("js/app.js", content);
+            }
+          '
+
+      - name: Run Vitest Suite
+        run: |
+          npx vitest run
+
+      - name: Commit & Push Repaired Artifacts
+        if: success()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json js/app.js js/local-llm-controller.js
+          git diff --quiet && git diff --staged --quiet || (git commit -m "fix: guard DOMContentLoaded listener in app.js and isolate wllama runtime loading for vitest" && git push)
