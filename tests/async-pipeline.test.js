@@ -141,6 +141,7 @@ describe('async monitoring pipeline', () => {
 
       await waitFor(() => fakeDocument.getElementById('llm-state-indicator').textContent === 'LLM');
       expect(fakeDocument.getElementById('llm-state-indicator').textContent).toBe('LLM');
+      expect(fakeDocument.getElementById('ai-narrative').textContent).toContain('Thermal');
 
       await waitFor(() => audits.length > 0);
       expect(audits.some((name) => name.startsWith('RECOMMENDATION_'))).toBe(true);

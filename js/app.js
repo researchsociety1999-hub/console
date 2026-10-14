@@ -172,7 +172,17 @@ export class AppController {
     const aiNarrative = reasoning?.ai_narrative ?? 'No reasoning available.';
     const panel = document.getElementById('audit-compliance-panel');
     if (panel) {
-      panel.textContent = aiNarrative;
+      let narrative = document.getElementById('ai-narrative');
+      if (!narrative) {
+        narrative = document.createElement('div');
+        narrative.id = 'ai-narrative';
+        narrative.setAttribute('role', 'status');
+        narrative.setAttribute('aria-live', 'polite');
+        const heading = document.getElementById('audit-compliance-title');
+        if (heading && heading.parentNode === panel) panel.insertBefore(narrative, heading.nextSibling);
+        else panel.prepend(narrative);
+      }
+      narrative.textContent = aiNarrative;
     }
 
     const llmState = document.getElementById('llm-state-indicator');
@@ -401,7 +411,7 @@ export class AppController {
       await this.refreshGpio();
       await this.scanThermal();
       const radarCanvas = document.getElementById('radar-display');
-      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData());
+      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData().devices);
       await this.auditFirewall.logEvent('SCAN_ALL', { triggeredAt: new Date().toISOString() });
       this.appendAlertStream('Full local scan cycle completed (thermal + GPIO + radar).', 'info');
       return true;
@@ -580,7 +590,7 @@ export class AppController {
       this.updateTelemetryBadge(data.thermal);
       this.latestTelemetry = data;
       const radarCanvas = document.getElementById('radar-display');
-      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData());
+      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData().devices);
       this.renderFleetStatus();
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
