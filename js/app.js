@@ -3,6 +3,7 @@ import {
   DataFirewall,
   SecurityAuditFirewall,
   validateModulePacket,
+  computeTrustScore,
 } from './data-firewall.js';
 import {
   NFCSecurityAuditor,
@@ -16,6 +17,9 @@ import {
   createMonitoringPipeline,
   createWllamaCompleter,
 } from './async-pipeline.js';
+
+const POLL_INTERVAL_MS = 15000;
+const CONFIRMATION_TIMEOUT_MS = 60000;
 
 export const THEME_PRESETS = {
   operator: {
@@ -63,6 +67,8 @@ export class AppController {
     this.radarScanner = new NetworkRadarScanner();
     this.localLLM = new LocalConsoleLLM({ appController: this, dataFirewall: this.auditFirewall });
     this.pollTimer = null;
+    this._polling = false;
+    this._confirmationTimer = null;
     this.pendingLlmAction = null;
     this.latestTelemetry = null;
     this.currentTheme = 'operator';
@@ -154,7 +160,10 @@ export class AppController {
 
     const trustBadge = document.getElementById('trust-score-badge');
     if (trustBadge) {
-      const trustScore = Number(features?.trustScore ?? 100);
+      const trustScore = Number(features?.trustScore ?? computeTrustScore({
+        anomalyDetected: Boolean(features?.critical_threshold_crossed),
+        unauthorizedBle: Boolean(features?.novelty_detected),
+      }));
       trustBadge.textContent = `${Math.max(0, Math.min(100, Number.isFinite(trustScore) ? trustScore : 100))}`;
     }
 
@@ -192,6 +201,8 @@ export class AppController {
   }
 
   async requestConfirmation({ action, alert, reasoning } = {}) {
+    // A newer request replaces an older pending one; the older one is denied (fail-safe).
+    this.settleConfirmation(false);
     const modal = document.getElementById('llm-confirmation-modal');
     const details = document.getElementById('confirmation-details');
     if (details) {
@@ -208,12 +219,28 @@ export class AppController {
 
     return new Promise((resolve) => {
       this._pipelineApprovalResolver = resolve;
+      this._confirmationTimer = setTimeout(() => {
+        if (this._pipelineApprovalResolver !== resolve) return;
+        this.appendAlertStream(`Confirmation for ${action ?? 'ACTION'} timed out and was denied.`, 'warning');
+        this.hideLlmConfirmationModal();
+        this.settleConfirmation(false);
+      }, CONFIRMATION_TIMEOUT_MS);
     });
+  }
+
+  settleConfirmation(value) {
+    if (this._confirmationTimer) {
+      clearTimeout(this._confirmationTimer);
+      this._confirmationTimer = null;
+    }
+    const resolver = this._pipelineApprovalResolver;
+    this._pipelineApprovalResolver = null;
+    if (resolver) resolver(value);
   }
 
   async init() {
     this.bindEvents();
-    this.updateStatus('MANIFESTED / TRUSTED');
+    this.updateStatus('DISCONNECTED');
     this.setAuditLocked(true, 'Locked: authorization required.');
     this.monitoringPipeline = this.createMonitoringPipeline();
     window.addEventListener('pagehide', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
@@ -254,15 +281,22 @@ export class AppController {
   }
 
   async handleConnect() {
-    if (this.adapter.connected) {
-      await this.adapter.disconnect();
-      this.clearAuditSession();
-      this.localLLM.unloadSession();
-      this.updateStatus('DISCONNECTED');
-    } else {
-      await this.adapter.connect();
-      this.updateStatus('CONNECTED');
-      this.startPolling();
+    try {
+      if (this.adapter.connected) {
+        this.stopPolling();
+        await this.adapter.disconnect();
+        this.clearAuditSession();
+        this.localLLM.unloadSession();
+        this.updateStatus('DISCONNECTED');
+      } else {
+        this.updateStatus('CONNECTING');
+        await this.adapter.connect();
+        this.updateStatus('CONNECTED');
+        this.startPolling();
+      }
+    } catch (error) {
+      this.updateStatus('CONNECTION FAILED');
+      this.appendAlertStream(`Connection error: ${error?.message ?? error}`, 'critical');
     }
   }
 
@@ -424,6 +458,7 @@ export class AppController {
   }
 
   async handleEmergencyLockdown() {
+    this.stopPolling();
     if (this.adapter.connected) await this.adapter.disconnect();
     this.clearAuditSession();
     this.localLLM.unloadSession();
@@ -514,10 +549,8 @@ export class AppController {
 
   async handleConfirmLlmAction() {
     if (this._pipelineApprovalResolver) {
-      const resolver = this._pipelineApprovalResolver;
-      this._pipelineApprovalResolver = null;
       this.hideLlmConfirmationModal();
-      resolver(true);
+      this.settleConfirmation(true);
       return;
     }
 
@@ -534,10 +567,8 @@ export class AppController {
 
   async handleCancelLlmAction() {
     if (this._pipelineApprovalResolver) {
-      const resolver = this._pipelineApprovalResolver;
-      this._pipelineApprovalResolver = null;
       this.hideLlmConfirmationModal();
-      resolver(false);
+      this.settleConfirmation(false);
       return;
     }
 
@@ -573,12 +604,27 @@ export class AppController {
 
   startPolling() {
     if (!this.monitoringPipeline) this.monitoringPipeline = this.createMonitoringPipeline();
+    this.stopPolling();
+    const poll = async () => {
+      if (this._polling || !this.adapter.connected) return;
+      this._polling = true;
+      try {
+        const data = await this.adapter.sample?.();
+        if (data) this.monitoringPipeline.sampleIn(data);
+      } catch (error) {
+        this.appendAlertStream(`Telemetry sample failed: ${error?.message ?? error}`, 'warning');
+      } finally {
+        this._polling = false;
+      }
+    };
+    poll();
+    this.pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+  }
+
+  stopPolling() {
     if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = setInterval(async () => {
-      if (!this.adapter.connected) return;
-      const data = await this.adapter.sample?.();
-      if (data) this.monitoringPipeline.sampleIn(data);
-    }, 1000);
+    this.pollTimer = null;
+    this._polling = false;
   }
 
   renderTelemetry(data) {
