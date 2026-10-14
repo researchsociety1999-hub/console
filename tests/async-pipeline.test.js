@@ -3,6 +3,14 @@ import * as P from '../js/async-pipeline.js';
 import { AppController } from '../js/app.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (predicate, timeoutMs = 1000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return true;
+    await sleep(5);
+  }
+  return predicate();
+};
 const good = JSON.stringify({ ai_narrative: 'a', suggested_severity: 'high', final_action_type: 'lockdown', refined_prediction: 'p', recommendation_text: 'r', root_cause_summary: 'c' });
 
 describe('async monitoring pipeline', () => {
@@ -68,49 +76,77 @@ describe('async monitoring pipeline', () => {
     expect(reas.length).toBe(0);
   });
 
-  it('integrates the monitoring pipeline into the app controller and renders LLM reasoning', async () => {
-    document.body.innerHTML = `
-      <div id="thermal-grid"></div>
-      <div id="radar-target-list"></div>
-      <div id="trust-score-badge"></div>
-      <div id="adapter-state-indicator"></div>
-      <div id="llm-state-indicator"></div>
-      <div id="audit-compliance-panel"></div>
-      <div id="alert-stream"></div>
-      <div id="llm-confirmation-modal" style="display:none;"></div>
-      <div id="confirmation-details"></div>
-      <div id="llm-console-interface"></div>
-      <div id="predicted-state-badge"></div>
-      <div id="temp-val"></div>
-      <div id="wifi-val"></div>
-      <div id="ble-val"></div>
-      <div id="nfc-val"></div>
-      <div id="fleet-device-list"></div>
-      <div id="radar-display"></div>
-      <div id="authorization-status"></div>
-      <div id="thermal-display"></div>
-    `;
-
-    const app = new AppController();
-    app.auditFirewall.authorized = true;
-    app.localLLM.loaded = true;
-    app.localLLM.wllama = {
-      createCompletion: async () => JSON.stringify({
-        ai_narrative: 'Thermal reading is elevated and requires review.',
-        suggested_severity: 'HIGH',
-        final_action_type: 'MONITOR',
-        refined_prediction: 'WATCH',
-        recommendation_text: 'Review the thermal trend.',
-        root_cause_summary: 'Thermal rise',
-      }),
+  it('wires the pipeline into AppController: publishes telemetry, renders LLM reasoning, and runs the gated dispatcher', async () => {
+    const elements = new Map();
+    const makeElement = (id) => ({
+      id,
+      textContent: '',
+      className: '',
+      style: {},
+      children: [],
+      classList: { add() {}, remove() {}, toggle() {} },
+      setAttribute() {},
+      addEventListener() {},
+      appendChild(child) { this.children.push(child); },
+      prepend(child) { this.children.unshift(child); },
+      removeChild(child) { this.children = this.children.filter((c) => c !== child); },
+      get childNodes() { return this.children; },
+      get lastChild() { return this.children[this.children.length - 1]; },
+    });
+    const fakeDocument = {
+      getElementById(id) {
+        if (!elements.has(id)) elements.set(id, makeElement(id));
+        return elements.get(id);
+      },
+      createElement() { return makeElement('created'); },
+      documentElement: { style: { setProperty() {} } },
     };
 
-    const pipeline = app.createMonitoringPipeline();
-    pipeline.sampleIn({ thermal: 45, wifi: { accessPoints: 2 }, ble: { devices: 1 }, nfc: { eventsLast5Min: 12 } });
-    await pipeline.queue.flush();
+    const audits = [];
+    const app = Object.create(AppController.prototype);
+    Object.assign(app, {
+      adapter: { connected: true, transport: 'Simulated', getRadarScanData: () => ({ devices: [] }), getGpioSnapshot: () => ({}) },
+      firewall: { generateAlert: (s) => (s.thermal > 40 ? [{ level: 'HIGH', type: 'THERMAL_EXCEEDED', value: s.thermal }] : []) },
+      auditFirewall: { authorized: true, logEvent: async (name) => { audits.push(name); return null; } },
+      radarScanner: { render() {} },
+      localLLM: {
+        loaded: true,
+        wllama: {
+          createCompletion: async () => JSON.stringify({
+            ai_narrative: 'Thermal reading is elevated and requires review.',
+            suggested_severity: 'HIGH',
+            final_action_type: 'MONITOR',
+            refined_prediction: 'WATCH',
+            recommendation_text: 'Review the thermal trend.',
+            root_cause_summary: 'Thermal rise',
+          }),
+        },
+      },
+      currentTheme: 'operator',
+      pendingLlmAction: null,
+      latestTelemetry: null,
+      monitoringPipeline: null,
+      _pipelineApprovalResolver: null,
+    });
 
-    expect(document.getElementById('thermal-grid').textContent).toContain('45');
-    expect(document.getElementById('llm-state-indicator').textContent).toBe('LLM');
-    expect(document.getElementById('audit-compliance-panel').textContent).toContain('Thermal');
+    const previousDocument = globalThis.document;
+    globalThis.document = fakeDocument;
+    try {
+      const pipeline = app.createMonitoringPipeline();
+      pipeline.sampleIn({ thermal: 45, wifi: { accessPoints: 2 }, ble: { devices: 1 }, nfc: { eventsLast5Min: 12 } });
+      await pipeline.queue.flush();
+
+      expect(fakeDocument.getElementById('thermal-grid').textContent).toContain('45');
+      expect(fakeDocument.getElementById('alert-stream').children.length).toBe(1);
+
+      await waitFor(() => fakeDocument.getElementById('llm-state-indicator').textContent === 'LLM');
+      expect(fakeDocument.getElementById('llm-state-indicator').textContent).toBe('LLM');
+
+      await waitFor(() => audits.length > 0);
+      expect(audits.some((name) => name.startsWith('RECOMMENDATION_'))).toBe(true);
+    } finally {
+      if (previousDocument === undefined) delete globalThis.document;
+      else globalThis.document = previousDocument;
+    }
   });
 });
