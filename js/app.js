@@ -600,7 +600,9 @@ export class AppController {
   updateStatus(status) { this.setText('predicted-state-badge', status); }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const app = new AppController();
-  app.init();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    const app = new AppController();
+    app.init();
+  });
+}
