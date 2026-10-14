@@ -101,9 +101,15 @@ export async function enrichAlertWithLocalReasoning(alert, features, { complete,
   } finally { clearTimeout(timer); }
 }
 
+export function extractCompletionText(result) {
+  if (typeof result === 'string') return result;
+  const choice = result?.choices?.[0];
+  return choice?.text ?? choice?.message?.content ?? '';
+}
+
 export function createWllamaCompleter(localLLM) {
   if (!localLLM?.loaded || typeof localLLM.wllama?.createCompletion !== 'function') return null;
-  return (prompt) => localLLM.wllama.createCompletion(prompt, { nPredict: 256 });
+  return async (prompt) => extractCompletionText(await localLLM.wllama.createCompletion({ prompt, max_tokens: 256, temperature: 0.2 }));
 }
 
 export async function dispatchOnlyAllowedRecommendation(alert, reasoning, deps = {}) {
