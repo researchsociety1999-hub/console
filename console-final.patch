@@ -1,0 +1,1810 @@
+From 9afb73661aca660f7d4899694a9eb9ae55d13720 Mon Sep 17 00:00:00 2001
+From: researchsociety1999-hub
+ <2.40382579e+08+researchsociety1999-hub@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 06:41:24 +0000
+Subject: [PATCH] Remove simulated device state from dashboard
+
+---
+ README.md                           |  23 +-
+ css/states.css                      |  15 ++
+ index.html                          |  65 +++---
+ js/app.js                           | 262 +++++++++++++++++------
+ js/async-pipeline.js                |   2 +-
+ js/data-firewall.js                 |  49 ++++-
+ js/joker-adapter.js                 | 315 +++++++++++-----------------
+ js/local-llm-controller.js          |  14 +-
+ js/service-worker-register.js       |  32 +--
+ js/storage.js                       |  54 ++++-
+ service-worker.js                   |  32 +--
+ tests/app-controller.test.js        |  54 +++++
+ tests/async-pipeline.test.js        |   6 +-
+ tests/console-core.test.js          |  83 +++++++-
+ tests/local-llm-controller.test.js  |   6 +-
+ tests/local-only-regression.test.js |  15 +-
+ tests/storage.test.js               |  62 ++++++
+ 17 files changed, 709 insertions(+), 380 deletions(-)
+ create mode 100644 tests/storage.test.js
+
+diff --git a/README.md b/README.md
+index 0676178..53b4a6f 100644
+--- a/README.md
++++ b/README.md
+@@ -1,13 +1,17 @@
+ # Console
+ 
+-Console is a local-first Progressive Web App for monitoring authorized SGP Joker Card or compatible custom-PCB hardware.
++Console is a local-first browser dashboard intended for authorized SGP Joker Card or compatible custom-PCB hardware. **The current repository does not yet implement the card's physical transport or firmware protocol.** It therefore starts disconnected, displays no live readings, and does not simulate a connected device.
+ 
+ ## Local-only architecture
+ 
+-- Telemetry is handled in-browser through simulation or Web Bluetooth BLE GATT.
++- The dashboard accepts telemetry only from an injected real card transport. No Joker-card Web Bluetooth GATT service, packet decoder, or device command protocol is configured yet.
++- Generic Bluetooth discovery and random/mock sensor readings are deliberately disabled; a device appearing in a browser chooser would not by itself prove that it is the Joker card.
++- Legacy `js/telemetry.js` and `js/sentinel/` utilities are not imported by the active dashboard entry point. The standalone sentinel telemetry engine remains test/legacy code and is not a Joker-card data source.
++- The Web NFC reader, when supported, reads nearby NFC tags from the browser device. It is a separate feature and is not a connection to the Joker card.
+ - Local GGUF models run through WebAssembly using `@wllama/wllama`.
+-- The encrypted Vault uses browser-local IndexedDB.
+-- Session activity uses tab-scoped `sessionStorage` and is erased on configured lost-state transitions.
++- PWA install metadata and a service worker are wired for secure origins; offline behavior still requires validation in the target browser.
++- Audit events remain local. When unlocked, the passphrase-verified Web Crypto/IndexedDB vault stores encrypted audit events and includes them in local compliance exports; the vault key is dropped on local emergency lock and page exit.
++- The audit-session gate checks input format and a local acknowledgment only; it does **not** verify identity, access rights, or an authorization ticket against an external service.
+ - No Supabase function, Cloud Agent, cloud synchronization, remote account, or built-in remote inference service is used.
+ 
+ ## Run locally
+@@ -15,14 +19,19 @@ Console is a local-first Progressive Web App for monitoring authorized SGP Joker
+ ```bash
+ npm install
+ npm run dev
+-npm test
+ ```
+ 
+-Use a Chromium-based browser over `https:` or `localhost` for Web Bluetooth. The first GGUF model download requires access to Hugging Face; inference remains in the browser after the model loads or is cached.
++Use a Chromium-based browser over `https:` or `localhost` for browser hardware APIs. To connect the Joker card, first provide its firmware/transport specification (for BLE: advertised name/service UUID, characteristic UUIDs, packet format, units, and command acknowledgements) and implement the matching transport. Until then, **Connect Card reports that no real transport is configured**.
++
++To run the automated tests:
++
++```bash
++npm test
++```
+ 
+ ## Safety and authorization
+ 
+-Console is intended solely for devices, environments, and systems you own or are explicitly authorized to evaluate. The application uses an allow-list for device commands and requires explicit confirmation for the Kill Switch. Local model output is advisory and cannot bypass deterministic hard stops, powered-off state, connection checks, or approved-action controls.
++Console is intended solely for devices, environments, and systems you own or are explicitly authorized to evaluate. Hardware controls are disabled unless a real transport is connected, and the dashboard must not be treated as proof of physical device status. Local model output is advisory; any future device command must be implemented by the real transport and protected by deterministic authorization and confirmation checks.
+ 
+ ## Deployment
+ 
+diff --git a/css/states.css b/css/states.css
+index c005a08..69fcb92 100644
+--- a/css/states.css
++++ b/css/states.css
+@@ -33,3 +33,18 @@ body.stealth-mode .ribbon { border-color: #3a4750; }
+   font: 700 11px var(--font-display); letter-spacing: .08em; padding: 6px 10px; border-radius: 999px;
+ }
+ .stealth-toggle.active { color: var(--red); border-color: #5a2530; background: rgba(255,79,102,.08); }
++
++.device-data-banner {
++  margin: 0.75rem 1rem;
++  padding: 0.7rem 0.9rem;
++  border: 1px solid var(--panel-border, rgba(255,176,32,.42));
++  border-left: 4px solid var(--accent-warning, #ff7a59);
++  background: rgba(20, 14, 0, 0.86);
++  color: var(--text-main, #f7f0dc);
++  font: 700 0.78rem/1.4 var(--font-display, monospace);
++  letter-spacing: 0.04em;
++}
++.device-data-banner[data-state="connected"] { border-left-color: #39ff88; }
++.device-data-banner[data-state="connecting"] { border-left-color: #ffb020; }
++.device-data-banner[data-state="error"] { border-left-color: #ff4f66; }
++button:disabled { cursor: not-allowed; opacity: 0.45; }
+diff --git a/index.html b/index.html
+index b54c2c1..227736d 100644
+--- a/index.html
++++ b/index.html
+@@ -4,7 +4,10 @@
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>AEGIS Tactical Console</title>
++  <meta name="theme-color" content="#0a0800">
++  <link rel="manifest" href="manifest.webmanifest">
+   <link rel="stylesheet" href="css/style.css">
++  <link rel="stylesheet" href="css/states.css">
+ </head>
+ <body>
+   <div id="app">
+@@ -14,23 +17,27 @@
+         <span>AEGIS TACTICAL INTERFACE</span>
+       </div>
+       <div class="header-readouts">
+-        <span id="battery-status">BATT: LOCAL</span>
+-        <span id="signal-status">LINK: --</span>
+-        <button id="connect-btn">Connect</button>
+-        <button id="header-emergency-lock-btn">Emergency Lock</button>
++          <span id="battery-status">BATT: --</span>
++          <span id="signal-status">LINK: --</span>
++          <span id="device-connection-status" role="status" aria-live="polite">DISCONNECTED</span>
++          <button id="connect-btn">Connect Card</button>
++          <button id="header-emergency-lock-btn">Lock Local Session</button>
+       </div>
+     </header>
+ 
++    <div id="device-data-banner" class="device-data-banner" data-state="disconnected" role="status" aria-live="polite">
++      DEVICE LINK DISCONNECTED: No card connected. Live telemetry is unavailable; no simulated readings are generated.
++    </div>
+     <main id="aegis-viewport">
+       <section id="thermal-recon-panel" aria-labelledby="thermal-recon-title">
+         <h2 id="thermal-recon-title">Thermal Recon</h2>
+-        <canvas id="thermal-display" width="260" height="260" aria-label="Local thermal heat-map display"></canvas>
+-        <div id="thermal-grid" aria-live="polite">--</div>
+-        <div class="metric"><span class="label">Temp:</span> <span id="temp-val">--</span> °C</div>
++        <canvas id="thermal-display" width="260" height="260" aria-label="Thermal display; no data until a real sensor is connected"></canvas>
++        <div id="thermal-grid" aria-live="polite">No thermal data received.</div>
++        <div class="metric"><span class="label">Temp:</span> <span id="temp-val">No data</span><span id="temp-unit"> °C</span></div>
+         <label for="thermal-threshold">Anomaly threshold (°C)</label>
+         <input id="thermal-threshold" type="number" min="0.1" step="0.1" value="2.5">
+-        <button id="calibrate-thermal-btn">Calibrate Baseline</button>
+-        <button id="scan-thermal-btn">Analyze Grid</button>
++        <button id="calibrate-thermal-btn" disabled>Calibrate Baseline</button>
++        <button id="scan-thermal-btn" disabled>Analyze Grid</button>
+         <div id="thermal-audit-result" role="status" aria-live="polite">Baseline not calibrated. Heuristic overlay labels (Human / Electronics / Baseline) are advisory pattern estimates, not configuration guarantees.</div>
+       </section>
+ 
+@@ -42,14 +49,14 @@
+       <section id="network-matrix-panel" aria-labelledby="network-matrix-title">
+         <h2 id="network-matrix-title">Network Matrix (Local, Non-RF-Capture)</h2>
+         <canvas id="radar-display" width="260" height="260" aria-label="Local device radar display"></canvas>
+-        <div id="radar-target-list" aria-live="polite">--</div>
+-        <div class="metric"><span class="label">Wi-Fi APs:</span> <span id="wifi-val">--</span></div>
+-        <div class="metric"><span class="label">BLE Devices:</span> <span id="ble-val">--</span></div>
++        <div id="radar-target-list" aria-live="polite">No device data received.</div>
++        <div class="metric"><span class="label">Wi-Fi APs:</span> <span id="wifi-val">No data</span></div>
++        <div class="metric"><span class="label">BLE Devices:</span> <span id="ble-val">No data</span></div>
+       </section>
+ 
+       <section id="nfc-center-panel" aria-labelledby="nfc-center-title">
+         <h2 id="nfc-center-title">NFC Center</h2>
+-        <div class="metric"><span class="label">NFC Events:</span> <span id="nfc-val">--</span></div>
++        <div class="metric"><span class="label">Card NFC events:</span> <span id="nfc-val">No data</span></div>
+         <label for="nfc-technology">Tag technology / metadata</label>
+         <input id="nfc-technology" type="text" placeholder="e.g., MIFARE Classic, DESFire EV3">
+         <button id="classify-nfc-btn">Classify Technology</button>
+@@ -57,23 +64,22 @@
+         <div id="nfc-posture-meter"><div id="nfc-posture-meter-fill"></div></div>
+         <div id="nfc-sector-map">Sector-level structure unavailable in read-only mode.</div>
+         <button id="start-nfc-reader-btn">Start Live NFC Reader (Web NFC)</button>
++        <div class="metric"><span class="label">Nearby browser NFC reads (not card telemetry):</span> <span id="browser-nfc-count">0</span></div>
+         <div id="nfc-reader-status" role="status" aria-live="polite">Live NFC reader inactive.</div>
+       </section>
+ 
+       <section id="device-control-panel" aria-labelledby="device-control-title">
+         <h2 id="device-control-title">Device Control</h2>
+-        <button id="refresh-gpio-btn">Refresh Physical States</button>
+-        <button id="toggle-door-btn">Toggle Door Contact</button>
+-        <button id="toggle-pir-btn">Toggle PIR Motion</button>
+-        <button id="toggle-tamper-btn">Toggle Tamper Sensor</button>
+-        <button id="run-self-test-btn">Run GPIO Self-Test</button>
++        <p>Hardware controls remain unavailable until a real card transport is connected.</p>
++        <button id="refresh-gpio-btn" disabled>Refresh Physical States</button>
++        <button id="run-self-test-btn" disabled>Run GPIO Self-Test</button>
+         <div id="gpio-monitor-status" role="status" aria-live="polite">No physical state sampled.</div>
+       </section>
+ 
+       <section id="fleet-status-panel" aria-labelledby="fleet-status-title">
+         <h2 id="fleet-status-title">Fleet Status (Local Node)</h2>
+-        <div id="fleet-device-list" role="status" aria-live="polite">No node data.</div>
+-        <div id="trust-score-badge" aria-live="polite">100</div>
++        <div id="fleet-device-list" role="status" aria-live="polite">No card connected. Device identity and fleet data are unavailable.</div>
++        <div id="trust-score-badge" aria-live="polite">--</div>
+         <div id="adapter-state-indicator" aria-live="polite">DISCONNECTED</div>
+         <label for="asset-inventory">Offline asset inventory JSON</label>
+         <textarea id="asset-inventory" rows="3" placeholder='[{"name":"Camera-01","credentialRotationNeeded":true}]'></textarea>
+@@ -85,16 +91,17 @@
+         <h2 id="audit-compliance-title">Audit &amp; Compliance</h2>
+ 
+         <h3>Local Encrypted Vault</h3>
+-        <input type="password" id="vault-passphrase" placeholder="Passphrase" autocomplete="current-password">
++        <input type="password" id="vault-passphrase" placeholder="Vault passphrase (10+ characters)" autocomplete="current-password">
+         <button id="vault-unlock-btn">Unlock Vault</button>
+         <div id="vault-status" role="status" aria-live="polite">Locked</div>
+ 
+         <h3>Authorization</h3>
+-        <input id="auth-reference" type="text" placeholder="e.g., AUTH-2026-001" autocomplete="off">
+-        <input id="admin-pin" type="password" placeholder="Local passphrase" autocomplete="current-password">
+-        <label><input id="research-ack" type="checkbox"> I confirm this assessment is authorized and read-only.</label>
+-        <button id="verify-authorization-btn">Verify Authorization</button>
+-        <div id="authorization-status" role="status" aria-live="polite">Locked: authorization required.</div>
++        <p>This is a local workflow gate only. The reference is format-checked; no account, identity, or permission service is contacted.</p>
++        <input id="auth-reference" type="text" placeholder="Local review reference (format only)" autocomplete="off">
++        <input id="admin-pin" type="password" placeholder="Local session passphrase (6+ chars)" autocomplete="current-password">
++        <label><input id="research-ack" type="checkbox"> I confirm I am authorized to conduct this read-only assessment.</label>
++        <button id="verify-authorization-btn">Start Local Audit Session</button>
++        <div id="authorization-status" role="status" aria-live="polite">Local session locked.</div>
+ 
+         <h3>Export &amp; Zeroize</h3>
+         <button id="export-compliance-btn">Export Local Compliance Report</button>
+@@ -123,9 +130,9 @@
+     </main>
+ 
+     <footer id="command-bar">
+-      <button id="emergency-btn">🔥 EMERGENCY</button>
+-      <button id="scan-all-btn">📡 SCAN ALL</button>
+-      <button id="lockdown-btn">🔒 LOCKDOWN</button>
++      <button id="emergency-btn">LOCK LOCAL SESSION</button>
++      <button id="scan-all-btn" disabled>📡 SCAN ALL</button>
++      <button id="lockdown-btn">LOCK LOCAL PANELS</button>
+       <button id="command-export-btn">📊 EXPORT</button>
+       <label for="theme-select">⚙️ THEME</label>
+       <select id="theme-select">
+diff --git a/js/app.js b/js/app.js
+index 40764a4..678d404 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -13,10 +13,12 @@ import {
+   NetworkRadarScanner,
+ } from './security-audit-suite.js';
+ import { LocalConsoleLLM } from './local-llm-controller.js';
++import { Vault } from './storage.js';
+ import {
+   createMonitoringPipeline,
+   createWllamaCompleter,
+ } from './async-pipeline.js';
++import { registerServiceWorker } from './service-worker-register.js';
+ 
+ const POLL_INTERVAL_MS = 15000;
+ const CONFIRMATION_TIMEOUT_MS = 60000;
+@@ -57,9 +59,17 @@ export const THEME_PRESETS = {
+ export class AppController {
+   constructor() {
+     this.adapter = new JokerAdapter();
++    this.adapter.setDisconnectHandler?.(() => {
++      this.stopPolling();
++      this.clearTelemetryDisplay();
++      this.setHardwareActionsEnabled(false);
++      this.setConnectionStatus('DISCONNECTED', 'The card transport reported a physical disconnect.');
++      this.updateStatus('DISCONNECTED');
++    });
+     this.firewall = new DataFirewall();
++    this.vault = new Vault();
+     this.vaultUnlocked = false;
+-    this.auditFirewall = new SecurityAuditFirewall({ vault: this.createLocalVaultBridge() });
++    this.auditFirewall = new SecurityAuditFirewall({ vault: this.vault });
+     this.nfcAuditor = new NFCSecurityAuditor();
+     this.thermalScanner = new TSCMThermalScanner();
+     this.gpioMonitor = new GPIOSecurityMonitor({ dataFirewall: this.auditFirewall });
+@@ -76,13 +86,6 @@ export class AppController {
+     this._pipelineApprovalResolver = null;
+   }
+ 
+-  createLocalVaultBridge() {
+-    return {
+-      get isUnlocked() { return false; },
+-      store: async () => undefined,
+-    };
+-  }
+-
+   createMonitoringPipeline() {
+     const pipeline = createMonitoringPipeline({
+       publishTelemetry: ({ sample, features = {} }) => this.publishTelemetry(sample, features),
+@@ -110,17 +113,16 @@ export class AppController {
+           switch (normalized) {
+             case 'LOCKDOWN':
+               this.handleLockdown();
+-              return { status: 'LOCKDOWN' };
+-            case 'ZEROIZE':
++              return { status: 'LOCAL_UI_LOCKDOWN' };
++            case 'CLEAR_AUDIT_SESSION':
+               this.clearAuditSession();
+-              return { status: 'ZEROIZED' };
++              return { status: 'LOCAL_AUDIT_SESSION_CLEARED' };
+             case 'EMERGENCY_KILL':
+-              await this.handleEmergencyLockdown();
+-              return { status: 'EMERGENCY_KILL' };
++              return await this.adapter.killDevice();
+             case 'RESTART_MODULE':
+-              return { status: 'RESTART_MODULE', alert: alert?.id ?? null };
++              return await this.adapter.restartModule(alert?.moduleId ?? 'unknown');
+             case 'RUN_COOLING_DIAGNOSTIC':
+-              return { status: 'RUN_COOLING_DIAGNOSTIC' };
++              return { status: 'UNAVAILABLE', reason: 'No cooling-diagnostic command is implemented for a real card transport.' };
+             case 'MONITOR':
+             default:
+               return { status: 'MONITOR' };
+@@ -136,25 +138,29 @@ export class AppController {
+ 
+   publishTelemetry(sample = {}, features = {}) {
+     if (!sample || typeof sample !== 'object') return;
++    if (!this.adapter?.connected) return;
+     this.latestTelemetry = sample;
+-    const thermalValue = Number(sample?.thermal ?? sample?.temperatureC ?? 0);
+-    this.setText('temp-val', Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : '--');
+-    this.setText('wifi-val', sample?.wifi?.accessPoints ?? '--');
+-    this.setText('ble-val', sample?.ble?.devices ?? '--');
+-    this.setText('nfc-val', sample?.nfc?.eventsLast5Min ?? '--');
+-    this.updateTelemetryBadge(thermalValue);
++    const thermalRaw = sample?.thermal ?? sample?.temperatureC;
++    const thermalValue = Number.isFinite(thermalRaw) ? thermalRaw : Number.NaN;
++    this.setText('temp-val', Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : 'No data');
++    this.setText('wifi-val', Number.isFinite(sample?.wifi?.accessPoints) ? sample.wifi.accessPoints : 'No data');
++    this.setText('ble-val', Number.isFinite(sample?.ble?.devices) ? sample.ble.devices : 'No data');
++    this.setText('nfc-val', Number.isFinite(sample?.nfc?.eventsLast5Min) ? sample.nfc.eventsLast5Min : 'No data');
++    if (Number.isFinite(thermalValue)) this.updateTelemetryBadge(thermalValue);
+ 
+     const thermalGrid = document.getElementById('thermal-grid');
+     if (thermalGrid) {
+-      thermalGrid.textContent = `thermal: ${Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : '--'}°C`;
++      thermalGrid.textContent = Number.isFinite(thermalValue) ? `Thermal reading: ${thermalValue.toFixed(1)}°C` : 'No thermal data received.';
+     }
+ 
+     const radarList = document.getElementById('radar-target-list');
+-    const radar = this.adapter?.getRadarScanData?.() ?? { devices: [] };
++    const radar = sample?.radar ?? { devices: [] };
+     if (radarList) {
+-      const deviceText = Array.isArray(radar.devices) && radar.devices.length
++      const deviceText = !sample?.radar
++        ? 'No radar data provided by the card.'
++        : Array.isArray(radar.devices) && radar.devices.length
+         ? radar.devices.map((device) => `${device?.type ?? 'device'}:${device?.rssi ?? '--'}dBm`).join(' | ')
+-        : 'no targets';
++        : 'No targets detected.';
+       radarList.textContent = deviceText;
+     }
+ 
+@@ -173,7 +179,8 @@ export class AppController {
+     }
+ 
+     const radarCanvas = document.getElementById('radar-display');
+-    if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter?.getRadarScanData?.().devices ?? []);
++    if (radarCanvas) this.radarScanner.render(radarCanvas, radar.devices ?? []);
++    this.setConnectionStatus('CONNECTED', 'Device telemetry received. Values shown are from the connected transport.');
+     this.renderFleetStatus();
+   }
+ 
+@@ -241,10 +248,15 @@ export class AppController {
+   async init() {
+     this.bindEvents();
+     this.updateStatus('DISCONNECTED');
+-    this.setAuditLocked(true, 'Locked: authorization required.');
++    this.setConnectionStatus('DISCONNECTED', 'No card connected. Live telemetry is unavailable; no simulated readings are generated.');
++    this.clearTelemetryDisplay();
++    this.setHardwareActionsEnabled(false);
++    this.renderFleetStatus();
++    this.setAuditLocked(true, 'Local session locked.');
+     this.monitoringPipeline = this.createMonitoringPipeline();
+-    window.addEventListener('pagehide', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
+-    window.addEventListener('beforeunload', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
++    registerServiceWorker();
++    window.addEventListener('pagehide', () => { this.clearAuditSession(); this.localLLM.unloadSession(); this.vault.lock(); this.vaultUnlocked = false; });
++    window.addEventListener('beforeunload', () => { this.clearAuditSession(); this.localLLM.unloadSession(); this.vault.lock(); this.vaultUnlocked = false; });
+   }
+ 
+   bindEvents() {
+@@ -263,9 +275,6 @@ export class AppController {
+     this.bind('calibrate-thermal-btn', 'click', () => this.calibrateThermal());
+     this.bind('scan-thermal-btn', 'click', () => this.scanThermal());
+     this.bind('refresh-gpio-btn', 'click', () => this.refreshGpio());
+-    this.bind('toggle-door-btn', 'click', () => this.handleToggleGpioLine('doorContact'));
+-    this.bind('toggle-pir-btn', 'click', () => this.handleToggleGpioLine('pirMotion'));
+-    this.bind('toggle-tamper-btn', 'click', () => this.handleToggleGpioLine('vibrationTamper'));
+     this.bind('run-self-test-btn', 'click', () => this.handleSelfTest('gpio'));
+     this.bind('export-compliance-btn', 'click', () => this.exportComplianceReport());
+     this.bind('clear-audit-session-btn', 'click', () => this.clearAuditSession());
+@@ -287,14 +296,25 @@ export class AppController {
+         await this.adapter.disconnect();
+         this.clearAuditSession();
+         this.localLLM.unloadSession();
++        this.clearTelemetryDisplay();
++        this.setHardwareActionsEnabled(false);
++        this.setConnectionStatus('DISCONNECTED', 'Card disconnected. Live telemetry is unavailable.');
+         this.updateStatus('DISCONNECTED');
+       } else {
++        this.setConnectionStatus('CONNECTING', 'Requesting a real card connection.');
+         this.updateStatus('CONNECTING');
+         await this.adapter.connect();
++        this.setHardwareActionsEnabled(true);
++        this.setConnectionStatus('CONNECTED', `Connected to ${this.adapter.deviceName || 'card'}; waiting for device telemetry.`);
+         this.updateStatus('CONNECTED');
+         this.startPolling();
+       }
+     } catch (error) {
++      this.setHardwareActionsEnabled(false);
++      if (!this.adapter?.connected) this.clearTelemetryDisplay();
++      this.setConnectionStatus('ERROR', error?.message ?? String(error));
++      this.setText('adapter-state-indicator', this.adapter?.connected ? 'CONNECTED' : 'DISCONNECTED');
++      this.renderFleetStatus();
+       this.updateStatus('CONNECTION FAILED');
+       this.appendAlertStream(`Connection error: ${error?.message ?? error}`, 'critical');
+     }
+@@ -308,12 +328,35 @@ export class AppController {
+     this.currentTheme = themeName;
+   }
+ 
+-  handleVaultUnlock(providedPassphrase) {
++  async handleVaultUnlock(providedPassphrase) {
+     const pass = providedPassphrase ?? document.getElementById('vault-passphrase')?.value;
+-    if (pass) {
++    const statusEl = document.getElementById('vault-status');
++    const button = document.getElementById('vault-unlock-btn');
++    const input = document.getElementById('vault-passphrase');
++    if (this.vault?.isUnlocked) {
++      this.vault?.lock();
++      this.vaultUnlocked = false;
++      if (statusEl) statusEl.textContent = 'Locked';
++      if (button) button.textContent = 'Unlock Vault';
++      if (input) input.value = '';
++      return false;
++    }
++    try {
++      if (!pass) throw new Error('Enter a passphrase to unlock the encrypted vault.');
++      if (!this.vault) throw new Error('The encrypted vault is not initialized.');
++      await this.vault.unlock(pass);
+       this.vaultUnlocked = true;
+-      const statusEl = document.getElementById('vault-status');
+-      if (statusEl) statusEl.textContent = 'Unlocked (local session)';
++      if (statusEl) statusEl.textContent = 'Unlocked; audit events are encrypted locally.';
++      if (button) button.textContent = 'Lock Vault';
++      return true;
++    } catch (error) {
++      this.vault?.lock();
++      this.vaultUnlocked = false;
++      if (statusEl) statusEl.textContent = `Vault unavailable: ${error?.message ?? error}`;
++      if (button) button.textContent = 'Unlock Vault';
++      return false;
++    } finally {
++      if (input) input.value = '';
+     }
+   }
+ 
+@@ -322,8 +365,8 @@ export class AppController {
+     const pin = document.getElementById('admin-pin')?.value;
+     const acknowledged = Boolean(document.getElementById('research-ack')?.checked);
+     const result = await this.auditFirewall.verifyAuthorization(ticket, pin, acknowledged);
+-    this.setAuditLocked(!result.authorized, result.authorized ? `Authorized locally for ${result.reference}.` : result.reason);
+-    if (result.authorized) this.updateStatus('AUTHORIZED / LOCAL AUDIT ACTIVE');
++    this.setAuditLocked(!result.authorized, result.authorized ? `Local audit session opened for ${result.reference}. No external identity or authorization was verified.` : result.reason);
++    if (result.authorized) this.updateStatus('LOCAL AUDIT SESSION ACTIVE');
+   }
+ 
+   setAuditLocked(locked, message) {
+@@ -335,8 +378,59 @@ export class AppController {
+     if (status) status.textContent = message;
+   }
+ 
++  setHardwareActionsEnabled(enabled) {
++    const requirements = {
++      'scan-all-btn': 'getSafeAuditTelemetry',
++      'calibrate-thermal-btn': 'getSafeAuditTelemetry',
++      'scan-thermal-btn': 'getSafeAuditTelemetry',
++      'refresh-gpio-btn': 'getSafeAuditTelemetry',
++      'run-self-test-btn': 'triggerModuleSelfTest'
++    };
++    Object.entries(requirements).forEach(([id, capability]) => {
++      const control = document.getElementById(id);
++      if (control) control.disabled = !enabled || !this.adapter?.hasCapability?.(capability);
++    });
++  }
++
++  setConnectionStatus(state, detail = '') {
++    const status = document.getElementById('device-connection-status');
++    if (status) status.textContent = state;
++    const link = document.getElementById('signal-status');
++    if (link) link.textContent = `LINK: ${state}`;
++    const connectButton = document.getElementById('connect-btn');
++    if (connectButton) connectButton.textContent = state === 'CONNECTED' ? 'Disconnect Card' : state === 'CONNECTING' ? 'Connecting…' : 'Connect Card';
++    const banner = document.getElementById('device-data-banner');
++    if (banner) {
++      banner.setAttribute?.('data-state', state.toLowerCase());
++      banner.textContent = `DEVICE LINK ${state}: ${detail}`;
++    }
++    const unit = document.getElementById('temp-unit');
++    const temperature = this.latestTelemetry?.thermal ?? this.latestTelemetry?.temperatureC;
++    if (unit) unit.hidden = !Number.isFinite(temperature);
++  }
++
++  clearTelemetryDisplay() {
++    this.latestTelemetry = null;
++    this.setText('temp-val', 'No data');
++    const unit = document.getElementById('temp-unit');
++    if (unit) unit.hidden = true;
++    this.setText('wifi-val', 'No data');
++    this.setText('ble-val', 'No data');
++    this.setText('nfc-val', 'No data');
++    this.setText('thermal-grid', 'No thermal data received.');
++    this.setText('radar-target-list', 'No device data received.');
++    this.setText('trust-score-badge', '--');
++    this.setText('adapter-state-indicator', this.adapter?.connected ? 'CONNECTED' : 'DISCONNECTED');
++    const thermalCanvas = document.getElementById('thermal-display');
++    const thermalContext = thermalCanvas?.getContext?.('2d');
++    thermalContext?.clearRect(0, 0, thermalCanvas.width, thermalCanvas.height);
++    const canvas = document.getElementById('radar-display');
++    if (canvas) this.radarScanner?.render?.(canvas, []);
++    this.renderFleetStatus();
++  }
++
+   async withAudit(action) {
+-    if (!this.auditFirewall.authorized) { this.setAuditLocked(true, 'Locked: verify local authorization first.'); return null; }
++    if (!this.auditFirewall.authorized) { this.setAuditLocked(true, 'Locked: start the local audit session first.'); return null; }
+     try { return await action(); } catch (error) { this.updateStatus(`AUDIT ERROR: ${error.message}`); return null; }
+   }
+ 
+@@ -363,7 +457,9 @@ export class AppController {
+     return this.withAudit(async () => {
+       const result = await this.adapter.startNfcReaderSession((techSummary) => {
+         const classification = this.nfcAuditor.classify(`${(techSummary.recordTypes || []).join(' ')} iso 14443-a`);
+-        this.setText('nfc-reader-status', `Live tag detected. ${classification.classification}: ${classification.finding}`);
++        const count = this.adapter.getRecentNfcEventCount?.() ?? 'unknown';
++        this.setText('browser-nfc-count', count);
++        this.setText('nfc-reader-status', `Nearby browser tag detected (not card telemetry). ${classification.classification}: ${classification.finding}`);
+         this.updateNfcPostureMeter(classification.risk);
+         this.auditFirewall.logEvent('NFC_LIVE_READ', { recordTypes: techSummary.recordTypes, serialNumberPresent: techSummary.serialNumberPresent, classification: classification.classification });
+       });
+@@ -386,9 +482,9 @@ export class AppController {
+ 
+   async calibrateThermal() {
+     return this.withAudit(async () => {
+-      this.adapter.calibrateThermalBaseline();
+       const telemetry = await this.adapter.getSafeAuditTelemetry();
+-      if (!telemetry) throw new Error('Connect local hardware before calibration.');
++      if (!telemetry) throw new Error('Connect a real card transport before calibration.');
++      if (!Array.isArray(telemetry.thermalGrid) || telemetry.thermalGrid.length === 0 || !telemetry.thermalGrid.every(Number.isFinite)) throw new Error('The connected card did not provide a complete numeric thermal grid.');
+       const baseline = this.thermalScanner.calibrate(telemetry.thermalGrid);
+       await this.auditFirewall.logEvent('THERMAL_BASELINE', { baseline: Number(baseline.toFixed(2)), sampleCount: telemetry.thermalGrid.length });
+       this.setText('thermal-audit-result', `Ambient baseline calibrated at ${baseline.toFixed(2)}°C.`);
+@@ -399,7 +495,8 @@ export class AppController {
+   async scanThermal() {
+     return this.withAudit(async () => {
+       const telemetry = await this.adapter.getSafeAuditTelemetry();
+-      if (!telemetry) throw new Error('Connect local hardware before scanning.');
++      if (!telemetry) throw new Error('Connect a real card transport before scanning.');
++      if (!Array.isArray(telemetry.thermalGrid) || telemetry.thermalGrid.length === 0 || !telemetry.thermalGrid.every(Number.isFinite)) throw new Error('The connected card did not provide a complete numeric thermal grid.');
+       const threshold = Number(document.getElementById('thermal-threshold')?.value || 2.5);
+       const result = this.thermalScanner.scan(telemetry.thermalGrid, threshold);
+       this.thermalScanner.render(document.getElementById('thermal-display'), result);
+@@ -414,7 +511,9 @@ export class AppController {
+   async refreshGpio() {
+     return this.withAudit(async () => {
+       const telemetry = await this.adapter.getSafeAuditTelemetry();
+-      if (!telemetry) throw new Error('Connect local hardware before reading states.');
++      if (!telemetry) throw new Error('Connect a real card transport before reading states.');
++      if (!telemetry.gpio || typeof telemetry.gpio !== 'object') throw new Error('The connected card did not provide GPIO telemetry.');
++      if (!['doorContact', 'pirMotion', 'vibrationTamper'].every((key) => typeof telemetry.gpio[key] === 'boolean')) throw new Error('The connected card provided incomplete GPIO sensor states.');
+       const result = await this.gpioMonitor.update(telemetry.gpio);
+       await this.auditFirewall.logEvent('GPIO_STATUS', { doorContact: result.doorContact, pirMotion: result.pirMotion, vibrationTamper: result.vibrationTamper, activityOnly: result.activity });
+       this.setText('gpio-monitor-status', `Door: ${result.doorContact ? 'closed' : 'open'} | PIR: ${result.pirMotion ? 'motion' : 'clear'} | Tamper: ${result.vibrationTamper ? 'alert' : 'clear'} (` + `activity: ${result.activity.wiegandD0 + result.activity.wiegandD1})`);
+@@ -434,6 +533,7 @@ export class AppController {
+   async handleSelfTest(moduleId) {
+     return this.withAudit(async () => {
+       const result = await this.adapter.triggerModuleSelfTest(moduleId);
++      if (!result || typeof result.passed !== 'boolean') throw new Error('The transport returned no validated self-test result.');
+       await this.auditFirewall.logEvent('MODULE_SELF_TEST', result);
+       this.setText('gpio-monitor-status', `Self-test ${result.passed ? 'PASSED' : 'FAILED'} (${result.latencyMs}ms, run #${result.runCount}).`);
+       return result;
+@@ -442,28 +542,50 @@ export class AppController {
+ 
+   async handleScanAll() {
+     return this.withAudit(async () => {
+-      await this.refreshGpio();
+-      await this.scanThermal();
++      const completed = [];
++      const gpio = await this.refreshGpio();
++      if (gpio) completed.push('GPIO');
++      const thermal = await this.scanThermal();
++      if (thermal) completed.push('thermal');
+       const radarCanvas = document.getElementById('radar-display');
+-      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData().devices);
+-      await this.auditFirewall.logEvent('SCAN_ALL', { triggeredAt: new Date().toISOString() });
+-      this.appendAlertStream('Full local scan cycle completed (thermal + GPIO + radar).', 'info');
++      if (this.adapter.hasCapability?.('getRadarScanData')) {
++        const radar = await this.adapter.getRadarScanData();
++        if (Array.isArray(radar?.devices)) {
++          if (radarCanvas) this.radarScanner.render(radarCanvas, radar.devices);
++          this.setText('radar-target-list', radar.devices.length ? `${radar.devices.length} targets reported by card.` : 'No targets detected by card radar.');
++          completed.push('radar');
++        }
++      } else {
++        this.setText('radar-target-list', 'Radar scan unavailable: no card capability is configured.');
++      }
++      if (!completed.length) throw new Error('No supported hardware checks returned data.');
++      await this.auditFirewall.logEvent('SCAN_ALL', { triggeredAt: new Date().toISOString(), completed });
++      this.appendAlertStream(`Completed available card checks: ${completed.join(', ')}.`, 'info');
+       return true;
+     });
+   }
+ 
+   handleLockdown() {
+-    this.setAuditLocked(true, 'Locked: manual lockdown engaged.');
+-    this.appendAlertStream('Manual lockdown engaged. Re-authorization required for gated modules.', 'warning');
++    this.setAuditLocked(true, 'Local manual lockdown engaged. Start a new local audit session to continue.');
++    this.appendAlertStream('Local manual lockdown engaged. The browser session gate was closed; no device command was sent.', 'warning');
+   }
+ 
+   async handleEmergencyLockdown() {
+     this.stopPolling();
+-    if (this.adapter.connected) await this.adapter.disconnect();
++    try {
++      if (this.adapter.connected) await this.adapter.disconnect();
++    } catch (error) {
++      this.appendAlertStream(`Local lock engaged, but transport disconnect reported an error: ${error?.message ?? error}`, 'warning');
++    }
+     this.clearAuditSession();
+     this.localLLM.unloadSession();
+-    this.appendAlertStream('EMERGENCY LOCKDOWN triggered. Hardware disconnected and session zeroized.', 'critical');
+-    this.updateStatus('EMERGENCY LOCKDOWN');
++    this.vault?.lock();
++    this.vaultUnlocked = false;
++    this.clearTelemetryDisplay();
++    this.setHardwareActionsEnabled(false);
++    this.setConnectionStatus('DISCONNECTED', 'Local dashboard session locked. No physical device command was sent.');
++    this.appendAlertStream('Local emergency lock engaged. The dashboard session was cleared; no physical device command was sent.', 'critical');
++    this.updateStatus('LOCAL SESSION LOCKED');
+   }
+ 
+   async exportComplianceReport() {
+@@ -528,8 +650,12 @@ export class AppController {
+   renderFleetStatus() {
+     const list = document.getElementById('fleet-device-list');
+     if (!list) return;
+-    const activity = Object.values(this.adapter.getGpioSnapshot()).reduce((sum, line) => sum + line.activity, 0);
+-    list.textContent = `LOCAL-NODE-01 | ${this.adapter.connected ? 'ONLINE' : 'OFFLINE'} | Transport: ${this.adapter.transport} | GPIO events: ${activity}`;
++    if (!this.adapter?.connected) {
++      list.textContent = 'No card connected. Device identity and fleet data are unavailable.';
++      return;
++    }
++    const identity = this.adapter.deviceName || this.adapter.deviceId || 'Unidentified card';
++    list.textContent = `${identity} | CONNECTED | Transport: ${this.adapter.transport || 'unknown'}`;
+   }
+ 
+   showLlmConfirmationModal(pending) {
+@@ -559,7 +685,9 @@ export class AppController {
+     const passphrase = document.getElementById('confirmation-passphrase')?.value || '';
+     const params = { ...(pending.params || {}), humanConfirmed: true };
+     if (pending.action === 'UNLOCK_VAULT_SESSION') params.passphrase = passphrase;
+-    const result = this.localLLM.dispatchCommand({ action: pending.action, params });
++    const result = pending.action === 'UNLOCK_VAULT_SESSION'
++      ? { status: await this.handleVaultUnlock(passphrase) ? 'VAULT_UNLOCKED' : 'VAULT_UNLOCK_FAILED' }
++      : this.localLLM.dispatchCommand({ action: pending.action, params });
+     await this.auditFirewall.logEvent('HUMAN_APPROVED', { action: pending.action, status: result.status }).catch(() => {});
+     this.appendLlmLog(`[Approved] ${pending.action} -> ${result.status}`, 'success');
+     this.hideLlmConfirmationModal();
+@@ -610,8 +738,14 @@ export class AppController {
+       this._polling = true;
+       try {
+         const data = await this.adapter.sample?.();
+-        if (data) this.monitoringPipeline.sampleIn(data);
++        if (data && this.adapter.connected) this.monitoringPipeline.sampleIn(data);
++        else if (!data && this.adapter.connected) {
++          this.clearTelemetryDisplay();
++          this.setConnectionStatus('CONNECTED', 'Connected, but no fresh telemetry was received; prior readings were cleared.');
++        }
+       } catch (error) {
++        this.clearTelemetryDisplay();
++        this.setConnectionStatus(this.adapter.connected ? 'CONNECTED' : 'DISCONNECTED', 'Telemetry read failed; prior readings were cleared.');
+         this.appendAlertStream(`Telemetry sample failed: ${error?.message ?? error}`, 'warning');
+       } finally {
+         this._polling = false;
+@@ -628,17 +762,7 @@ export class AppController {
+   }
+ 
+   renderTelemetry(data) {
+-    const apply = () => {
+-      this.setText('temp-val', data.thermal.toFixed(1));
+-      this.setText('wifi-val', data.wifi.accessPoints);
+-      this.setText('ble-val', data.ble.devices);
+-      this.setText('nfc-val', data.nfc.eventsLast5Min);
+-      this.updateTelemetryBadge(data.thermal);
+-      this.latestTelemetry = data;
+-      const radarCanvas = document.getElementById('radar-display');
+-      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData().devices);
+-      this.renderFleetStatus();
+-    };
++    const apply = () => this.publishTelemetry(data);
+     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
+     else apply();
+   }
+diff --git a/js/async-pipeline.js b/js/async-pipeline.js
+index e3a446d..2bde2d5 100644
+--- a/js/async-pipeline.js
++++ b/js/async-pipeline.js
+@@ -1,7 +1,7 @@
+ export const REASONING_TIMEOUT_MS = 4000;
+ export const QUEUE_MAX_SIZE = 32;
+ export const SAFE_ACTIONS = Object.freeze(['MONITOR', 'LOG', 'FLAG_FOR_REVIEW', 'RUN_COOLING_DIAGNOSTIC', 'RESTART_MODULE']);
+-export const SENSITIVE_ACTIONS = Object.freeze(['EMERGENCY_KILL', 'LOCKDOWN', 'ZEROIZE']);
++export const SENSITIVE_ACTIONS = Object.freeze(['EMERGENCY_KILL', 'LOCKDOWN', 'CLEAR_AUDIT_SESSION']);
+ export const ACTION_ALLOW_LIST = Object.freeze([...SAFE_ACTIONS, ...SENSITIVE_ACTIONS]);
+ export const SEVERITIES = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+ const REASONING_KEYS = ['ai_narrative', 'suggested_severity', 'final_action_type', 'refined_prediction', 'recommendation_text', 'root_cause_summary'];
+diff --git a/js/data-firewall.js b/js/data-firewall.js
+index 7b362f4..dbfc77d 100644
+--- a/js/data-firewall.js
++++ b/js/data-firewall.js
+@@ -132,6 +132,7 @@ export class DataFirewall {
+       ? config.minTrustScore
+       : 50;
+     this.alerts = [];
++    this._alertSequence = 0;
+   }
+ 
+   evaluate(packet) {
+@@ -140,9 +141,22 @@ export class DataFirewall {
+ 
+   generateAlert(telemetry) {
+     const alerts = [];
+-    if (telemetry.thermal > 40.0) alerts.push({ level: 'CRITICAL', type: 'THERMAL_EXCEEDED', value: telemetry.thermal });
+-    if (telemetry.nfc && telemetry.nfc.eventsLast5Min > 10) alerts.push({ level: 'HIGH', type: 'NFC_BURST', value: telemetry.nfc.eventsLast5Min });
++    const add = (level, type, value) => {
++      this._alertSequence += 1;
++      alerts.push({
++        id: `alert-${Date.now().toString(36)}-${this._alertSequence}`,
++        level,
++        severity: level,
++        type,
++        value,
++        sample: telemetry,
++        timestamp: Date.now()
++      });
++    };
++    if (Number.isFinite(telemetry?.thermal) && telemetry.thermal > 40.0) add('CRITICAL', 'THERMAL_EXCEEDED', telemetry.thermal);
++    if (Number.isFinite(telemetry?.nfc?.eventsLast5Min) && telemetry.nfc.eventsLast5Min > 10) add('HIGH', 'NFC_BURST', telemetry.nfc.eventsLast5Min);
+     this.alerts.push(...alerts);
++    if (this.alerts.length > 200) this.alerts.splice(0, this.alerts.length - 200);
+     return alerts;
+   }
+ }
+@@ -174,11 +188,19 @@ export class SecurityAuditFirewall extends DataFirewall {
+     const pin = String(adminPIN || '');
+     const validTicket = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(ticket);
+     const validPin = pin.length >= 6 && pin.length <= 256 && (!this.expectedPin || pin === this.expectedPin);
+-    if (!acknowledged || !validTicket || !validPin) return { authorized: false, reason: 'A valid local ticket, passphrase, and acknowledgment are required.' };
++    if (!acknowledged || !validTicket || !validPin) return { authorized: false, reason: 'A well-formed local reference, a 6+ character passphrase, and acknowledgment are required. No external authorization is performed.' };
++    if (!globalThis.crypto?.getRandomValues || !globalThis.crypto?.subtle) return { authorized: false, reason: 'Secure Web Crypto is unavailable; authorization was not opened.' };
+     this.authorized = true;
+     this.authorizationReference = ticket;
+-    this.transientKey = await sha256(`${ticket}:${Date.now()}:${Math.random()}`);
+-    await this.logEvent('SESSION_START', { acknowledgment: true, authorizationTicket: ticket });
++    const nonce = crypto.getRandomValues(new Uint8Array(32));
++    const nonceHex = [...nonce].map((byte) => byte.toString(16).padStart(2, '0')).join('');
++    this.transientKey = await sha256(`${ticket}:${Date.now()}:${nonceHex}`);
++    try {
++      await this.logEvent('SESSION_START', { acknowledgment: true, localReference: ticket });
++    } catch (error) {
++      this.sessionClear();
++      return { authorized: false, reason: `Could not start the local audit session: ${error?.message ?? error}` };
++    }
+     return { authorized: true, reference: ticket };
+   }
+ 
+@@ -199,16 +221,29 @@ export class SecurityAuditFirewall extends DataFirewall {
+   }
+ 
+   async generateComplianceReport() {
++    const persisted = this.vault?.isUnlocked && typeof this.vault.exportAll === 'function'
++      ? await this.vault.exportAll()
++      : [];
++    const eventsByHash = new Map();
++    persisted.filter((record) => record?.type === 'AUDIT_EVENT').forEach((record) => {
++      const { type, ...entry } = record;
++      if (entry.integrityHash) eventsByHash.set(entry.integrityHash, entry);
++    });
++    this.auditLog.forEach((entry) => {
++      if (entry.integrityHash) eventsByHash.set(entry.integrityHash, { ...entry });
++    });
++    const events = Array.from(eventsByHash.values());
+     const report = {
+       generatedAt: new Date().toISOString(),
+       localOnly: true,
+       authorizationReference: this.authorizationReference,
+-      eventCount: this.auditLog.length,
++      eventCount: events.length,
++      includesEncryptedHistory: Boolean(this.vault?.isUnlocked),
+       controls: {
+         iso27001: ['A.5.15 Access control', 'A.5.24 Information security incident management', 'A.7.5 Physical security monitoring', 'A.8.9 Configuration management'],
+         nist80053: ['AC-3 Access Enforcement', 'AU-2 Event Logging', 'AU-9 Protection of Audit Information', 'PE-3 Physical Access Control', 'SI-4 System Monitoring']
+       },
+-      events: this.auditLog.map((entry) => ({ ...entry })),
++      events,
+       exclusions: ['No network discovery', 'No credential probing', 'No card writing or cloning', 'No relay simulation', 'No Wiegand payload capture']
+     };
+     report.integrityHash = await sha256(stableStringify(report));
+diff --git a/js/joker-adapter.js b/js/joker-adapter.js
+index f840af6..0fc8133 100644
+--- a/js/joker-adapter.js
++++ b/js/joker-adapter.js
+@@ -1,41 +1,30 @@
++const REAL_TRANSPORT_UNAVAILABLE = 'No real Joker-card transport is configured. No simulated connection or telemetry will be created.';
++
+ /**
+- * JokerAdapter - Local Hardware Interface & Hardware Simulation Bus
++ * JokerAdapter is the dashboard boundary for a real card transport.
+  *
+- * Keeps the small contract the existing tests rely on (setProfile(name), killDevice(),
+- * getThermalGrid(), getRadarScanData() -> { angle, devices }) and the full local
+- * audit/telemetry API that js/app.js depends on.
++ * This repository currently has no Joker firmware protocol or physical transport
++ * implementation. The adapter therefore stays disconnected by default and never
++ * manufactures telemetry, device identity, GPIO state, or command acknowledgements.
++ * A future transport can be injected, but it must explicitly confirm connection and
++ * provide the corresponding data/command methods.
+  */
+-
+ export class JokerAdapter {
+-  constructor() {
++  constructor({ transport = null } = {}) {
++    this.deviceTransport = transport;
+     this.connected = false;
+-    this.transport = 'Simulated';
++    this.transport = transport?.name || 'Not configured';
++    this.deviceId = null;
++    this.deviceName = null;
+     this.activeProfile = 'default';
+-    this.moduleStates = {};
+-    this.gpioState = {};
+-    this.connectionProfile = { transport: 'Simulated' };
++    this.connectionProfile = { transport: this.transport };
+     this.stealthMode = false;
+-    this.devicePoweredOff = false;
+-    this._ambientBaseline = 27 + Math.random() * 2;
+-    this._driftPhase = Math.random() * Math.PI * 2;
+-    this._heatSources = [{ row: 3, col: 5, intensity: 3.2 }];
+-    this._thermalHistory = [];
+-    this._gpioLines = {
+-      doorContact: { active: false, activity: 0, lastChangedAt: null },
+-      pirMotion: { active: false, activity: 0, lastChangedAt: null },
+-      vibrationTamper: { active: false, activity: 0, lastChangedAt: null }
+-    };
+-    this._wiegandActivity = { d0: 0, d1: 0 };
+-    this._bleDiscovered = new Set();
+     this._nfcReader = null;
+     this._nfcEventTimestamps = [];
+-    this._selfTestCounter = 0;
++    this._onDisconnect = () => {};
++    this._transportDisconnectUnsubscribe = null;
+   }
+ 
+-  /**
+-   * setProfile('name') selects a named local profile.
+-   * setProfile({ transport, endpointUrl, wifiSsid }) updates the connection profile.
+-   */
+   setProfile(profile = {}) {
+     if (typeof profile === 'string' || profile === undefined) {
+       this.activeProfile = profile || 'default';
+@@ -45,114 +34,102 @@ export class JokerAdapter {
+     return this.connectionProfile;
+   }
+ 
++  setTransport(transport) {
++    if (this.connected) throw new Error('Disconnect the current card before replacing its transport.');
++    if (!transport || typeof transport.connect !== 'function' || typeof transport.disconnect !== 'function' || typeof transport.sample !== 'function') {
++      throw new TypeError('A real transport must implement connect(), disconnect(), and sample().');
++    }
++    this.deviceTransport = transport;
++    this.transport = transport.name || 'Real transport';
++    this.connectionProfile = { ...this.connectionProfile, transport: this.transport };
++  }
++
+   validateConnectionProfile() {
+-    const profile = this.connectionProfile;
+-    if (profile.transport === 'Simulated' || profile.transport === 'simulation') return { valid: true };
+-    const valid = Boolean(profile.transport && profile.endpointUrl && profile.wifiSsid);
+-    return { valid, reason: valid ? undefined : (profile.endpointUrl ? 'Wi-Fi SSID is required.' : 'Endpoint URL is required.') };
++    if (!this.deviceTransport) return { valid: false, reason: REAL_TRANSPORT_UNAVAILABLE };
++    if (typeof this.deviceTransport.connect !== 'function' || typeof this.deviceTransport.disconnect !== 'function' || typeof this.deviceTransport.sample !== 'function') {
++      return { valid: false, reason: 'The configured transport cannot provide a complete connection and telemetry path.' };
++    }
++    return { valid: true };
+   }
+ 
+-  async connect(profile = {}) {
+-    if (profile && Object.keys(profile).length) this.connectionProfile = { ...this.connectionProfile, ...profile };
+-    const check = this.validateConnectionProfile();
+-    if (!check.valid) throw new Error(check.reason);
+-    this.devicePoweredOff = false;
+-    this.connected = true;
+-    this.transport = this.connectionProfile.transport || 'Simulated';
+-    return { success: true, status: 'CONNECTED', transport: this.transport };
++  setDisconnectHandler(handler) { this._onDisconnect = typeof handler === 'function' ? handler : () => {}; }
++
++  hasCapability(method) {
++    return this.connected && typeof this.deviceTransport?.[method] === 'function';
+   }
+ 
+-  async disconnect() {
++  handleTransportDisconnect() {
+     this.connected = false;
++    this.deviceId = null;
++    this.deviceName = null;
++    this._transportDisconnectUnsubscribe?.();
++    this._transportDisconnectUnsubscribe = null;
+     this.stopNfcReaderSession();
+-    return { success: true, status: 'DISCONNECTED' };
++    this._onDisconnect();
+   }
+ 
+-  async sample() {
+-    if (!this.connected) return null;
+-    const grid = this.generateThermalGrid();
+-    const centerValue = grid[Math.floor(grid.length / 2)];
+-    return {
+-      thermal: Number(centerValue.toFixed(2)),
+-      wifi: { accessPoints: Math.floor(Math.random() * 10) + 1 },
+-      ble: { devices: this._bleDiscovered.size || Math.floor(Math.random() * 5) },
+-      nfc: { eventsLast5Min: this._countRecentNfcEvents() },
+-      modules: [
+-        { id: 'nfc', status: 'OK' },
+-        { id: 'gpio', status: 'OK' }
+-      ]
+-    };
+-  }
++  async connect(profile = {}) {
++    if (profile && Object.keys(profile).length) this.connectionProfile = { ...this.connectionProfile, ...profile };
++    const check = this.validateConnectionProfile();
++    if (!check.valid) throw new Error(check.reason);
+ 
+-  getThermalGrid() {
+-    return this.generateThermalGrid();
+-  }
++    let result;
++    try {
++      result = await this.deviceTransport.connect(this.connectionProfile);
++    } catch (error) {
++      try { await this.deviceTransport.disconnect(); } catch { /* best-effort cleanup */ }
++      throw error;
++    }
++    if (result?.connected !== true) {
++      try { await this.deviceTransport.disconnect(); } catch { /* best-effort cleanup */ }
++      throw new Error('The transport did not confirm a live card connection.');
++    }
+ 
+-  generateThermalGrid(rows = 8, cols = 8) {
+-    this._driftPhase += 0.05;
+-    const ambient = this._ambientBaseline + Math.sin(this._driftPhase) * 0.4 + (Math.random() - 0.5) * 0.15;
+-    const grid = new Array(rows * cols).fill(0);
+-    for (let r = 0; r < rows; r++) {
+-      for (let c = 0; c < cols; c++) {
+-        let value = ambient;
+-        for (const source of this._heatSources) {
+-          const dr = r - source.row;
+-          const dc = c - source.col;
+-          const distanceSq = dr * dr + dc * dc;
+-          value += source.intensity * Math.exp(-distanceSq / 3);
+-        }
+-        value += (Math.random() - 0.5) * 0.3;
+-        grid[r * cols + c] = value;
+-      }
++    this.connected = true;
++    this.transport = this.deviceTransport.name || this.connectionProfile.transport || 'Real transport';
++    this.deviceId = result.deviceId || null;
++    this.deviceName = result.deviceName || null;
++    if (typeof this.deviceTransport.onDisconnect === 'function') {
++      this._transportDisconnectUnsubscribe = this.deviceTransport.onDisconnect(() => this.handleTransportDisconnect()) || null;
+     }
+-    this._thermalHistory.push(grid);
+-    if (this._thermalHistory.length > 20) this._thermalHistory.shift();
+-    return grid;
++    return { success: true, status: 'CONNECTED', transport: this.transport, deviceId: this.deviceId, deviceName: this.deviceName };
+   }
+ 
+-  addHeatSource(row, col, intensity = 3) {
+-    const source = { row, col, intensity };
+-    this._heatSources.push(source);
+-    return { ...source };
++  async disconnect() {
++    try {
++      if (this.deviceTransport && this.connected) await this.deviceTransport.disconnect();
++    } finally {
++      this.connected = false;
++      this.deviceId = null;
++      this.deviceName = null;
++      this._transportDisconnectUnsubscribe?.();
++      this._transportDisconnectUnsubscribe = null;
++      this.stopNfcReaderSession();
++    }
++    return { success: true, status: 'DISCONNECTED' };
+   }
+ 
+-  clearHeatSources() { this._heatSources = []; }
+-
+-  calibrateThermalBaseline(sampleCount = 5) {
+-    const frames = [];
+-    for (let i = 0; i < sampleCount; i++) frames.push(this.generateThermalGrid());
+-    const flatValues = frames.flat();
+-    const baseline = flatValues.reduce((sum, v) => sum + v, 0) / flatValues.length;
+-    this._ambientBaseline = baseline;
+-    return baseline;
++  async sample() {
++    if (!this.connected || typeof this.deviceTransport?.sample !== 'function') return null;
++    return this.deviceTransport.sample();
+   }
+ 
++  getThermalGrid() { return []; }
++  generateThermalGrid() { return []; }
++  addHeatSource() { throw new Error('Thermal simulation is disabled; connect a real sensor transport.'); }
++  clearHeatSources() { throw new Error('Thermal simulation is disabled; connect a real sensor transport.'); }
++  calibrateThermalBaseline() { throw new Error('Thermal calibration requires readings from a connected real sensor.'); }
++
+   async getSafeAuditTelemetry() {
+-    if (!this.connected) return null;
+-    const grid = this.generateThermalGrid();
+-    return {
+-      thermalGrid: grid,
+-      gpio: {
+-        doorContact: this._gpioLines.doorContact.active,
+-        pirMotion: this._gpioLines.pirMotion.active,
+-        vibrationTamper: this._gpioLines.vibrationTamper.active,
+-        wiegandD0Activity: this._wiegandActivity.d0,
+-        wiegandD1Activity: this._wiegandActivity.d1
+-      }
+-    };
++    if (!this.connected || typeof this.deviceTransport?.getSafeAuditTelemetry !== 'function') return null;
++    return this.deviceTransport.getSafeAuditTelemetry();
+   }
+ 
+-  toggleGpioLine(lineName) {
+-    const line = this._gpioLines[lineName];
+-    if (!line) throw new Error(`Unknown GPIO line: ${lineName}`);
+-    line.active = !line.active;
+-    line.activity += 1;
+-    line.lastChangedAt = new Date().toISOString();
+-    return { line: lineName, active: line.active, activity: line.activity };
+-  }
++  toggleGpioLine() { throw new Error('Simulated GPIO is disabled; no physical GPIO transport is configured.'); }
+ 
+   getGpioSnapshot() {
+-    return Object.fromEntries(Object.entries(this._gpioLines).map(([key, value]) => [key, { ...value }]));
++    if (!this.connected || typeof this.deviceTransport?.getGpioSnapshot !== 'function') return {};
++    return this.deviceTransport.getGpioSnapshot();
+   }
+ 
+   serializeSafeAuditEvent(type, data = {}) {
+@@ -171,51 +148,23 @@ export class JokerAdapter {
+     return this.serializeSafeAuditEvent(parsed.type, parsed.data || {});
+   }
+ 
+-  setGpioPin(pin, value) {
+-    if (!this.connected) throw new Error('Connect local hardware before setting GPIO state.');
+-    const pinId = String(pin);
+-    const normalizedValue = value === true || value === 'HIGH' || value === 1 ? 'HIGH' : 'LOW';
+-    this.gpioState[pinId] = normalizedValue;
+-    return { action: 'GPIO_SET', pin: pinId, value: normalizedValue, status: 'SET_LOCALLY' };
+-  }
+-
+-  setModuleState(moduleId, state) {
+-    if (!this.connected) throw new Error('Connect local hardware before toggling a module.');
+-    const id = String(moduleId || 'unknown');
+-    const normalizedState = state === true || state === 'ON' ? 'ON' : 'OFF';
+-    this.moduleStates[id] = normalizedState;
+-    return { moduleId: id, state: normalizedState, status: 'SET_LOCALLY' };
++  requireTransportMethod(method, ...args) {
++    if (!this.connected) throw new Error('Connect a real card before issuing hardware commands.');
++    if (typeof this.deviceTransport?.[method] !== 'function') {
++      throw new Error(`The connected card transport does not implement ${method}().`);
++    }
++    return this.deviceTransport[method](...args);
+   }
+ 
++  setGpioPin(pin, value) { return this.requireTransportMethod('setGpioPin', pin, value); }
++  setModuleState(moduleId, state) { return this.requireTransportMethod('setModuleState', moduleId, state); }
+   toggleModule(moduleId, state) { return this.setModuleState(moduleId, state); }
+-
+-  async triggerModuleSelfTest(moduleId) {
+-    if (!this.connected) throw new Error('Connect local hardware before running a self-test.');
+-    this._selfTestCounter += 1;
+-    await new Promise((resolve) => setTimeout(resolve, 0));
+-    const latencyMs = 8 + Math.round(Math.random() * 40);
+-    const passed = latencyMs < 45;
+-    return { moduleId: String(moduleId || 'unknown'), passed, latencyMs, runCount: this._selfTestCounter };
+-  }
++  triggerModuleSelfTest(moduleId) { return this.requireTransportMethod('triggerModuleSelfTest', moduleId); }
+ 
+   async scanForBleDevice() {
+-    if (typeof navigator === 'undefined' || !navigator.bluetooth?.requestDevice) {
+-      return { supported: false, devices: this._simulateBleCount() };
+-    }
+-    try {
+-      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true });
+-      this._bleDiscovered.add(device.id || device.name || `device-${this._bleDiscovered.size + 1}`);
+-      if (typeof device.watchAdvertisements === 'function') {
+-        try { await device.watchAdvertisements(); } catch { /* optional presence tracking */ }
+-      }
+-      return { supported: true, devices: this._bleDiscovered.size, deviceName: device.name || 'Unnamed device' };
+-    } catch (error) {
+-      return { supported: true, cancelled: true, devices: this._bleDiscovered.size || this._simulateBleCount(), error: error.message };
+-    }
++    return { supported: false, devices: 0, reason: 'Generic Bluetooth discovery is disabled; the Joker card protocol and service identifiers are not configured.' };
+   }
+ 
+-  _simulateBleCount() { return Math.floor(Math.random() * 5); }
+-
+   async startNfcReaderSession(onReading) {
+     if (typeof NDEFReader === 'undefined') return { supported: false };
+     try {
+@@ -235,63 +184,37 @@ export class JokerAdapter {
+     }
+   }
+ 
+-  stopNfcReaderSession() { this._nfcReader = null; }
++  stopNfcReaderSession() {
++    if (this._nfcReader) this._nfcReader.onreading = null;
++    this._nfcReader = null;
++  }
+ 
+   _countRecentNfcEvents(windowMs = 5 * 60 * 1000) {
+     const now = Date.now();
+-    this._nfcEventTimestamps = this._nfcEventTimestamps.filter((t) => now - t <= windowMs);
+-    return this._nfcEventTimestamps.length || Math.floor(Math.random() * 3);
+-  }
+-
+-  /**
+-   * Returns the current radar sweep: { angle, devices }. Each device carries both the
+-   * radar-scanner fields (angle in radians, rssi, kind, safety) and a display `type`.
+-   */
+-  getRadarScanData() {
+-    const bleCount = this._bleDiscovered.size || Math.floor(Math.random() * 4) + 1;
+-    const wifiCount = Math.floor(Math.random() * 6) + 2;
+-    const devices = [];
+-    for (let i = 0; i < bleCount; i++) {
+-      devices.push({ angle: Math.random() * Math.PI * 2, rssi: -40 - Math.random() * 50, kind: 'BLE', type: 'BLE', safety: i === 0 ? 'KNOWN' : 'UNKNOWN' });
+-    }
+-    for (let i = 0; i < wifiCount; i++) {
+-      devices.push({ angle: Math.random() * Math.PI * 2, rssi: -30 - Math.random() * 60, kind: 'WIFI', type: 'Wi-Fi', safety: 'UNKNOWN' });
+-    }
+-    return { angle: Math.floor(Math.random() * 360), devices };
+-  }
+-
+-  setRgbMode(mode) {
+-    if (!this.connected) throw new Error('Connect local hardware before setting RGB mode.');
+-    return this.stealthMode ? { status: 'suppressed_by_stealth_mode' } : { action: 'RGB_MODE', mode, status: 'SET_LOCALLY' };
++    this._nfcEventTimestamps = this._nfcEventTimestamps.filter((timestamp) => now - timestamp <= windowMs);
++    return this._nfcEventTimestamps.length;
+   }
+ 
+-  async sendBuzzerTone(frequency = 880, duration = 160) {
+-    if (!this.connected) throw new Error('Connect local hardware before triggering the buzzer.');
+-    return this.stealthMode ? { status: 'suppressed_by_stealth_mode' } : { action: 'BUZZER_TONE', frequency, duration, status: 'ok' };
+-  }
++  getRecentNfcEventCount() { return this._countRecentNfcEvents(); }
+ 
+-  async setStealthMode(enabled) {
+-    this.stealthMode = Boolean(enabled);
+-    return { stealthMode: this.stealthMode };
++  getRadarScanData() {
++    if (!this.connected || typeof this.deviceTransport?.getRadarScanData !== 'function') return { angle: null, devices: [] };
++    return this.deviceTransport.getRadarScanData();
+   }
+ 
+-  async restartModule(moduleId) {
+-    return { action: 'MODULE_RESTART', moduleId: String(moduleId || 'unknown'), recovered: true, status: 'RESTARTED' };
+-  }
++  setRgbMode(mode) { return this.requireTransportMethod('setRgbMode', mode); }
++  sendBuzzerTone(frequency = 880, duration = 160) { return this.requireTransportMethod('sendBuzzerTone', frequency, duration); }
++  async setStealthMode(enabled) { this.stealthMode = Boolean(enabled); return { stealthMode: this.stealthMode }; }
++  restartModule(moduleId) { return this.requireTransportMethod('restartModule', moduleId); }
+ 
+-  /**
+-   * Isolates the simulated device and clears its connected state.
+-   * Callers are expected to obtain human confirmation first (see AppController).
+-   */
+-  killDevice() {
+-    this.stopNfcReaderSession();
+-    this.connected = false;
+-    this.devicePoweredOff = true;
+-    this.activeProfile = 'isolated';
+-    return { success: true, status: 'TERMINATED' };
++  async killDevice() {
++    if (!this.connected || typeof this.deviceTransport?.killDevice !== 'function') {
++      throw new Error('A physical kill command is not implemented for the connected card.');
++    }
++    return this.deviceTransport.killDevice();
+   }
+ 
+-  isDevicePoweredOff() { return this.devicePoweredOff; }
++  isDevicePoweredOff() { return false; }
+ }
+ 
+ if (typeof window !== 'undefined') {
+diff --git a/js/local-llm-controller.js b/js/local-llm-controller.js
+index 96dd4e3..d1ee5ea 100644
+--- a/js/local-llm-controller.js
++++ b/js/local-llm-controller.js
+@@ -6,20 +6,20 @@
+  *   node_modules), so no CDN or bare-specifier resolution is needed.
+  * - Model output is advisory: tool calls are parsed from text, checked against an allow-list,
+  *   sensitive actions need an explicit on-screen confirmation, and hardware/audit actions
+- *   need a verified authorization session.
++ *   require the dashboard's local audit-session gate.
+  */
+ 
+ const ENGINE_ENTRYPOINTS = ['../vendor/wllama/esm/index.js', '../node_modules/@wllama/wllama/esm/index.js'];
+ 
+-const SENSITIVE_ACTIONS = new Set(['UNLOCK_VAULT_SESSION', 'ZEROIZE_ALL', 'EMERGENCY_KILL']);
++const SENSITIVE_ACTIONS = new Set(['UNLOCK_VAULT_SESSION', 'CLEAR_AUDIT_SESSION', 'LOCK_LOCAL_SESSION']);
+ const AUTH_REQUIRED_ACTIONS = new Set(['SET_GPIO_PIN', 'TOGGLE_MODULE', 'READ_THERMAL_SWEEP']);
+-const SUPPORTED_ACTIONS = new Set(['SET_GPIO_PIN', 'TOGGLE_MODULE', 'READ_THERMAL_SWEEP', 'UNLOCK_VAULT_SESSION', 'ZEROIZE_ALL', 'EMERGENCY_KILL']);
++const SUPPORTED_ACTIONS = new Set(['SET_GPIO_PIN', 'TOGGLE_MODULE', 'READ_THERMAL_SWEEP', 'UNLOCK_VAULT_SESSION', 'CLEAR_AUDIT_SESSION', 'LOCK_LOCAL_SESSION']);
+ 
+ const SYSTEM_PROMPT = [
+   'You are a local, on-device console administrator assistant running entirely in the browser.',
+   'You may propose tool actions by emitting a single JSON object of the form {"action": "<ACTION_NAME>", "params": { ... }}.',
+-  'Supported actions: SET_GPIO_PIN, TOGGLE_MODULE, READ_THERMAL_SWEEP, UNLOCK_VAULT_SESSION, ZEROIZE_ALL, EMERGENCY_KILL.',
+-  'UNLOCK_VAULT_SESSION, ZEROIZE_ALL and EMERGENCY_KILL are sensitive and will only execute if the local user has explicitly confirmed them through the on-screen approval dialog; you cannot force their execution.',
++  'Supported actions: SET_GPIO_PIN, TOGGLE_MODULE, READ_THERMAL_SWEEP, UNLOCK_VAULT_SESSION, CLEAR_AUDIT_SESSION, LOCK_LOCAL_SESSION.',
++  'UNLOCK_VAULT_SESSION, CLEAR_AUDIT_SESSION and LOCK_LOCAL_SESSION are sensitive and will only execute if the local user has explicitly confirmed them through the on-screen approval dialog; you cannot force their execution.',
+   'Never fabricate hardware state. Never request or output credentials, PINs, passphrases, or card data.'
+ ].join(' ');
+ 
+@@ -170,8 +170,8 @@ export class LocalConsoleLLM {
+       TOGGLE_MODULE: () => app?.adapter?.setModuleState?.(params.moduleId, params.state),
+       READ_THERMAL_SWEEP: () => app?.scanThermal?.(),
+       UNLOCK_VAULT_SESSION: () => { app?.handleVaultUnlock?.(params.passphrase); return { status: 'VAULT_UNLOCK_REQUESTED' }; },
+-      ZEROIZE_ALL: () => { app?.clearAuditSession?.(); return { status: 'ZEROIZED' }; },
+-      EMERGENCY_KILL: () => { app?.handleEmergencyLockdown?.(); return { status: 'EMERGENCY_LOCKDOWN_REQUESTED' }; }
++      CLEAR_AUDIT_SESSION: () => { app?.clearAuditSession?.(); return { status: 'LOCAL_AUDIT_SESSION_CLEARED' }; },
++      LOCK_LOCAL_SESSION: () => { app?.handleEmergencyLockdown?.(); return { status: 'LOCAL_SESSION_LOCK_REQUESTED' }; }
+     };
+ 
+     let result;
+diff --git a/js/service-worker-register.js b/js/service-worker-register.js
+index 13aa710..102b398 100644
+--- a/js/service-worker-register.js
++++ b/js/service-worker-register.js
+@@ -1,35 +1,24 @@
+ /**
+  * Service Worker Registration
+- * Safe registration for private/local-only access
++ * Register the worker on supported secure origins (HTTPS or localhost).
+  */
+ 
+ export function registerServiceWorker() {
+   if (!('serviceWorker' in navigator)) {
+-    console.log('Service Workers not supported');
++    console.info('Service Workers are not supported in this browser.');
+     return;
+   }
+ 
+-  const isPrivateHost =
+-    location.hostname === 'localhost' ||
+-    location.hostname === '127.0.0.1' ||
+-    location.hostname === '[::1]' ||
+-    /^192\.168\./.test(location.hostname) ||
+-    /^10\./.test(location.hostname) ||
+-    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(location.hostname) ||
+-    location.hostname.endsWith('.local');
+-
+-  const isSecureContext = location.protocol === 'https:' || location.hostname === 'localhost';
+-
+-  if (!isPrivateHost || !isSecureContext) {
+-    console.warn(
+-      'Service Worker registration skipped. This app requires HTTPS or localhost for PWA features.'
+-    );
++  const isSecureOrigin = location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
++  if (!isSecureOrigin) {
++    console.warn('Service Worker registration requires HTTPS or localhost.');
+     return;
+   }
+ 
+   window.addEventListener('load', async () => {
+     try {
+-      const registration = await navigator.serviceWorker.register('/js/service-worker.js', {
++      const workerUrl = new URL('../service-worker.js', import.meta.url);
++      const registration = await navigator.serviceWorker.register(workerUrl, {
+         scope: '/',
+         updateViaCache: 'none'
+       });
+@@ -39,6 +28,7 @@ export function registerServiceWorker() {
+       // Handle updates
+       registration.addEventListener('updatefound', () => {
+         const newWorker = registration.installing;
++        if (!newWorker) return;
+         newWorker.addEventListener('statechange', () => {
+           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+             console.log('New Service Worker available. App update ready.');
+@@ -51,7 +41,7 @@ export function registerServiceWorker() {
+       // Periodically check for updates
+       setInterval(() => {
+         registration.update();
+-      }, 60000); // Check every minute
++      }, 300000); // Check every five minutes
+     } catch (error) {
+       console.error('Service Worker registration failed:', error);
+     }
+@@ -66,10 +56,10 @@ function showUpdatePrompt(registration) {
+     'App update available. Reload now to install the latest version?'
+   );
+   if (confirmUpdate) {
+-    const newWorker = registration.waiting;
++    const newWorker = registration.waiting || registration.installing;
+     if (newWorker) {
++      navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload(), { once: true });
+       newWorker.postMessage({ type: 'SKIP_WAITING' });
+-      window.location.reload();
+     }
+   }
+ }
+diff --git a/js/storage.js b/js/storage.js
+index 3d47ee0..1844fec 100644
+--- a/js/storage.js
++++ b/js/storage.js
+@@ -5,6 +5,9 @@
+ const DB_NAME = "console-vault";
+ const STORE_NAME = "records";
+ const PBKDF2_ITERATIONS = 100000;
++const SALT_KEY = "console-vault-salt";
++const CHECK_KEY = "console-vault-key-check";
++const KEY_CHECK_TEXT = "console-vault-key-check-v1";
+ 
+ function openDb() {
+   return new Promise((resolve, reject) => {
+@@ -41,15 +44,54 @@ export class Vault {
+   get isUnlocked() { return !!this._key; }
+ 
+   async unlock(passphrase) {
+-    let saltHex = localStorage.getItem("console-vault-salt");
+-    if (!saltHex) {
+-      const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+-      saltHex = Array.from(saltBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+-      localStorage.setItem("console-vault-salt", saltHex);
++    if (typeof passphrase !== "string" || passphrase.length < 10 || passphrase.length > 256) {
++      throw new Error("Use a passphrase between 10 and 256 characters.");
+     }
++    if (!globalThis.crypto?.subtle || !globalThis.indexedDB || !globalThis.localStorage) {
++      throw new Error("Encrypted vault storage requires Web Crypto, IndexedDB, and localStorage in a secure browser context.");
++    }
++
++    const existingSaltHex = localStorage.getItem(SALT_KEY);
++    const isNewVault = !existingSaltHex;
++    const saltBytes = isNewVault ? crypto.getRandomValues(new Uint8Array(16)) : null;
++    const saltHex = existingSaltHex || Array.from(saltBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
++    if (!/^[0-9a-f]{32}$/i.test(saltHex)) throw new Error("Vault salt is malformed; refusing to unlock encrypted data.");
+     const salt = new Uint8Array(saltHex.match(/.{2}/g).map((b) => parseInt(b, 16)));
++    const key = await deriveKey(passphrase, salt);
++    const checkRecord = localStorage.getItem(CHECK_KEY);
++
++    if (checkRecord) {
++      try {
++        const parsed = JSON.parse(checkRecord);
++        const cleartext = await crypto.subtle.decrypt(
++          { name: "AES-GCM", iv: new Uint8Array(parsed.iv) },
++          key,
++          new Uint8Array(parsed.ciphertext)
++        );
++        if (new TextDecoder().decode(cleartext) !== KEY_CHECK_TEXT) throw new Error("mismatch");
++      } catch {
++        throw new Error("Incorrect vault passphrase or corrupt vault verification data.");
++      }
++    } else {
++      if (!isNewVault) throw new Error("This existing vault has no passphrase verifier; refusing to risk overwriting its key.");
++      const iv = crypto.getRandomValues(new Uint8Array(12));
++      const ciphertext = await crypto.subtle.encrypt(
++        { name: "AES-GCM", iv },
++        key,
++        new TextEncoder().encode(KEY_CHECK_TEXT)
++      );
++      try {
++        localStorage.setItem(SALT_KEY, saltHex);
++        localStorage.setItem(CHECK_KEY, JSON.stringify({ iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)) }));
++      } catch (error) {
++        localStorage.removeItem(SALT_KEY);
++        localStorage.removeItem(CHECK_KEY);
++        throw new Error(`Could not initialize vault verification data: ${error?.message ?? error}`);
++      }
++    }
++
+     this._salt = salt;
+-    this._key = await deriveKey(passphrase, salt);
++    this._key = key;
+   }
+ 
+   lock() {
+diff --git a/service-worker.js b/service-worker.js
+index c308754..096ed64 100644
+--- a/service-worker.js
++++ b/service-worker.js
+@@ -1,31 +1,31 @@
+-const CACHE_NAME = "console-cache-v3";
++const CACHE_NAME = "console-cache-v4";
+ const CORE_ASSETS = [
+   "./",
+   "./index.html",
+   "./manifest.webmanifest",
+-  "./css/tokens.css",
+-  "./css/app.css",
++  "./css/style.css",
+   "./css/states.css",
+   "./js/app.js",
+-  "./js/state-machine.js",
++  "./js/async-pipeline.js",
+   "./js/data-firewall.js",
+-  "./js/telemetry.js",
+   "./js/joker-adapter.js",
+-  "./js/watchdog.js",
++  "./js/local-llm-controller.js",
+   "./js/storage.js",
+-  "./js/agent.js",
+-  "./js/local-model.js",
+-  "./js/module-detail.js",
+-  "./js/ui.js",
++  "./js/security-audit-suite.js",
++  "./js/service-worker-register.js",
+   "./assets/icon.svg"
+ ];
+ 
+ self.addEventListener("install", (event) => {
+   event.waitUntil(
+-    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)).then(() => self.skipWaiting())
++    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS))
+   );
+ });
+ 
++self.addEventListener("message", (event) => {
++  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
++});
++
+ self.addEventListener("activate", (event) => {
+   event.waitUntil(
+     caches.keys().then((keys) =>
+@@ -36,17 +36,21 @@ self.addEventListener("activate", (event) => {
+ 
+ self.addEventListener("fetch", (event) => {
+   if (event.request.method !== "GET") return;
++  if (new URL(event.request.url).origin !== self.location.origin) return;
++  if (new URL(event.request.url).pathname.endsWith("/service-worker.js")) return;
+ 
+   event.respondWith(
+     caches.match(event.request).then((cached) => {
+       if (cached) return cached;
+       return fetch(event.request)
+         .then((response) => {
+-          const copy = response.clone();
+-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
++          if (response.ok && response.type === "basic") {
++            const copy = response.clone();
++            event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)));
++          }
+           return response;
+         })
+-        .catch(() => caches.match("./index.html"));
++        .catch(() => event.request.mode === "navigate" ? caches.match("./index.html") : Response.error());
+     })
+   );
+ });
+diff --git a/tests/app-controller.test.js b/tests/app-controller.test.js
+index 3178d26..04eca86 100644
+--- a/tests/app-controller.test.js
++++ b/tests/app-controller.test.js
+@@ -1,5 +1,6 @@
+ import { describe, it, expect } from 'vitest';
+ import { AppController } from '../js/app.js';
++import { JokerAdapter } from '../js/joker-adapter.js';
+ 
+ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+ 
+@@ -71,6 +72,58 @@ function makeApp(overrides = {}) {
+ }
+ 
+ describe('AppController behaviour fixes', () => {
++  it('does not report CONNECTED when no real card transport is configured', async () => {
++    await withDocument(async (doc) => {
++      const app = makeApp({ adapter: new JokerAdapter() });
++      await app.handleConnect();
++
++      expect(app.adapter.connected).toBe(false);
++      expect(app.pollTimer).toBe(null);
++      expect(doc.getElementById('device-connection-status').textContent).toBe('ERROR');
++      expect(doc.getElementById('device-data-banner').textContent).toContain('No real Joker-card transport is configured');
++      expect(doc.getElementById('connect-btn').textContent).toBe('Connect Card');
++      expect(doc.getElementById('adapter-state-indicator').textContent).toBe('DISCONNECTED');
++    });
++  });
++
++  it('does not render telemetry while the adapter is disconnected', async () => {
++    await withDocument(async (doc) => {
++      const app = makeApp();
++      app.publishTelemetry({ thermal: 45, wifi: { accessPoints: 7 } });
++
++      expect(app.latestTelemetry).toBe(null);
++      expect(doc.getElementById('temp-val').textContent).toBe('');
++      expect(doc.getElementById('wifi-val').textContent).toBe('');
++    });
++  });
++
++  it('reports vault unlock success only after the vault confirms it', async () => {
++    await withDocument(async (doc) => {
++      const vault = {
++        isUnlocked: false,
++        async unlock() { this.isUnlocked = true; },
++        lock() { this.isUnlocked = false; },
++      };
++      const app = makeApp({ vault });
++      expect(await app.handleVaultUnlock('correct horse battery staple')).toBe(true);
++      expect(doc.getElementById('vault-status').textContent).toContain('audit events are encrypted locally');
++      expect(doc.getElementById('vault-unlock-btn').textContent).toBe('Lock Vault');
++      expect(await app.handleVaultUnlock()).toBe(false);
++      expect(vault.isUnlocked).toBe(false);
++      expect(doc.getElementById('vault-status').textContent).toBe('Locked');
++    });
++  });
++
++  it('does not claim the vault unlocked after passphrase verification fails', async () => {
++    await withDocument(async (doc) => {
++      const vault = { isUnlocked: false, async unlock() { throw new Error('wrong passphrase'); }, lock() {} };
++      const app = makeApp({ vault });
++      expect(await app.handleVaultUnlock('wrong passphrase')).toBe(false);
++      expect(app.vaultUnlocked).toBe(false);
++      expect(doc.getElementById('vault-status').textContent).toContain('wrong passphrase');
++    });
++  });
++
+   it('reports a failed connection instead of throwing, and does not start polling', async () => {
+     await withDocument(async (doc) => {
+       const app = makeApp();
+@@ -149,6 +202,7 @@ describe('AppController behaviour fixes', () => {
+   it('computes the trust badge from the contextual features', async () => {
+     await withDocument(async (doc) => {
+       const app = makeApp();
++      app.adapter.connected = true;
+       app.publishTelemetry({ thermal: 20 }, {});
+       expect(doc.getElementById('trust-score-badge').textContent).toBe('100');
+       app.publishTelemetry({ thermal: 45 }, { critical_threshold_crossed: true });
+diff --git a/tests/async-pipeline.test.js b/tests/async-pipeline.test.js
+index c779c6b..ccf2121 100644
+--- a/tests/async-pipeline.test.js
++++ b/tests/async-pipeline.test.js
+@@ -51,9 +51,9 @@ describe('async monitoring pipeline', () => {
+     expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'FORMAT_DISK' }, base)).status).toBe('BLOCKED_NOT_ALLOWLISTED');
+     expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'MONITOR' }, { ...base, isAuthorized: () => false })).status).toBe('BLOCKED_UNAUTHORIZED');
+     expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'MONITOR' }, { ...base, validatePacket: () => false })).status).toBe('BLOCKED_INVALID_PACKET');
+-    expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'ZEROIZE' }, base)).status).toBe('CONFIRMATION_REQUIRED');
+-    expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'ZEROIZE' }, { ...base, requestConfirmation: async () => false })).status).toBe('DENIED_BY_HUMAN');
+-    expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'ZEROIZE' }, { ...base, requestConfirmation: async () => 'yes' })).status).toBe('DENIED_BY_HUMAN');
++    expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'CLEAR_AUDIT_SESSION' }, base)).status).toBe('CONFIRMATION_REQUIRED');
++    expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'CLEAR_AUDIT_SESSION' }, { ...base, requestConfirmation: async () => false })).status).toBe('DENIED_BY_HUMAN');
++    expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'CLEAR_AUDIT_SESSION' }, { ...base, requestConfirmation: async () => 'yes' })).status).toBe('DENIED_BY_HUMAN');
+     expect(calls).toEqual([]);
+     expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'LOCKDOWN' }, { ...base, requestConfirmation: async () => true })).status).toBe('EXECUTED');
+     expect((await P.dispatchOnlyAllowedRecommendation(al, { final_action_type: 'MONITOR' }, base)).status).toBe('EXECUTED');
+diff --git a/tests/console-core.test.js b/tests/console-core.test.js
+index 0dc01b8..c366e19 100644
+--- a/tests/console-core.test.js
++++ b/tests/console-core.test.js
+@@ -1,5 +1,7 @@
+ import { beforeEach, describe, expect, it, vi } from 'vitest';
+ import {
++  DataFirewall,
++  SecurityAuditFirewall,
+   computeTrustScore,
+   runDataFirewall,
+   validateModulePacket
+@@ -92,6 +94,42 @@ beforeEach(() => {
+ });
+ 
+ describe('Console Core Logic & Adapter Contract', () => {
++  it('stores authorized audit events in the unlocked vault and includes them in exports', async () => {
++    const stored = [];
++    const vault = {
++      isUnlocked: true,
++      store: async (record) => { stored.push(record); },
++      exportAll: async () => stored,
++    };
++    const firewall = new SecurityAuditFirewall({ vault });
++    firewall.authorized = true;
++    firewall.authorizationReference = 'AUTH-1234';
++    const entry = await firewall.logEvent('TEST_EVENT', { source: 'unit-test' });
++    const report = await firewall.generateComplianceReport();
++
++    expect(stored).toHaveLength(1);
++    expect(stored[0]).toMatchObject({ type: 'AUDIT_EVENT', action: 'TEST_EVENT', integrityHash: entry.integrityHash });
++    expect(report.includesEncryptedHistory).toBe(true);
++    expect(report.eventCount).toBe(1);
++    expect(report.events[0].integrityHash).toBe(entry.integrityHash);
++  });
++
++  it('emits complete alert records for downstream reasoning', () => {
++    const firewall = new DataFirewall();
++    const sample = { thermal: 45, wifi: { accessPoints: 3 } };
++    const [alert] = firewall.generateAlert(sample);
++
++    expect(alert).toMatchObject({
++      level: 'CRITICAL',
++      severity: 'CRITICAL',
++      type: 'THERMAL_EXCEEDED',
++      value: 45,
++      sample
++    });
++    expect(alert.id).toMatch(/^alert-/);
++    expect(Number.isFinite(alert.timestamp)).toBe(true);
++  });
++
+   it('exports required firewall helper functions', () => {
+     expect(typeof validateModulePacket).toBe('function');
+     expect(typeof computeTrustScore).toBe('function');
+@@ -129,26 +167,55 @@ describe('Console Core Logic & Adapter Contract', () => {
+     expect(typeof result.timestamp).toBe('number');
+   });
+ 
+-  it('supports JokerAdapter setProfile and killDevice methods', async () => {
++  it('keeps the default adapter disconnected and refuses to fabricate device data', async () => {
+     const adapter = new JokerAdapter();
+ 
+     expect(typeof adapter.setProfile).toBe('function');
+     expect(typeof adapter.killDevice).toBe('function');
+ 
+-    await adapter.connect();
+-    expect(adapter.connected).toBe(true);
++    await expect(adapter.connect()).rejects.toThrow(/No real Joker-card transport is configured/);
++    expect(adapter.connected).toBe(false);
++    expect(await adapter.sample()).toBe(null);
++    expect(adapter.getThermalGrid()).toEqual([]);
++    expect(adapter.getRadarScanData()).toEqual({ angle: null, devices: [] });
+ 
+     expect(adapter.setProfile('stealth')).toEqual({
+       success: true,
+       profile: 'stealth'
+     });
+ 
+-    expect(adapter.killDevice()).toEqual({
+-      success: true,
+-      status: 'TERMINATED'
+-    });
++    await expect(adapter.killDevice()).rejects.toThrow(/physical kill command is not implemented/);
++    expect(adapter.connected).toBe(false);
++  });
++
++  it('accepts telemetry only from a transport that confirms a real connection', async () => {
++    const packet = { thermal: 31.25, deviceTimestamp: 1000 };
++    let onDisconnect;
++    const transport = {
++      name: 'Test real transport',
++      connect: async () => ({ connected: true, deviceId: 'card-17', deviceName: 'Joker Card' }),
++      disconnect: async () => {},
++      sample: async () => packet,
++      onDisconnect: (handler) => { onDisconnect = handler; return () => { onDisconnect = null; }; },
++    };
++    const adapter = new JokerAdapter({ transport });
++    let disconnected = false;
++    adapter.setDisconnectHandler(() => { disconnected = true; });
++    const result = await adapter.connect();
++
++    expect(result.deviceId).toBe('card-17');
++    expect(adapter.connected).toBe(true);
++    expect(await adapter.sample()).toBe(packet);
++    onDisconnect();
++    expect(adapter.connected).toBe(false);
++    expect(disconnected).toBe(true);
++    await adapter.disconnect();
++    expect(adapter.connected).toBe(false);
++  });
+ 
++  it('stays disconnected if a transport does not explicitly confirm the connection', async () => {
++    const adapter = new JokerAdapter({ transport: { connect: async () => ({ success: true }), disconnect: async () => {}, sample: async () => null } });
++    await expect(adapter.connect()).rejects.toThrow(/did not confirm a live card connection/);
+     expect(adapter.connected).toBe(false);
+-    expect(adapter.activeProfile).toBe('isolated');
+   });
+ });
+diff --git a/tests/local-llm-controller.test.js b/tests/local-llm-controller.test.js
+index fd5a26c..7eedbb4 100644
+--- a/tests/local-llm-controller.test.js
++++ b/tests/local-llm-controller.test.js
+@@ -88,12 +88,12 @@ describe('LocalConsoleLLM', () => {
+     expect(res.error).toBe('Malformed tool payload.');
+   });
+ 
+-  it('never lets the model confirm its own sensitive action', async () => {
+-    const { llm, app } = makeLLM({ completion: '{"action":"ZEROIZE_ALL","params":{"humanConfirmed":true}}' });
++  it('never lets the model confirm its own local audit-session-clear action', async () => {
++    const { llm, app } = makeLLM({ completion: '{"action":"CLEAR_AUDIT_SESSION","params":{"humanConfirmed":true}}' });
+     const out = await llm.executeUserCommand('wipe everything');
+     expect(out.executed.status).toBe('CONFIRMATION_REQUIRED');
+     expect(app.calls).toEqual([]);
+-    const approved = llm.dispatchCommand({ action: 'ZEROIZE_ALL', params: { humanConfirmed: true } });
++    const approved = llm.dispatchCommand({ action: 'CLEAR_AUDIT_SESSION', params: { humanConfirmed: true } });
+     expect(approved.status).toBe('EXECUTED');
+     expect(app.calls).toEqual([['zeroize']]);
+   });
+diff --git a/tests/local-only-regression.test.js b/tests/local-only-regression.test.js
+index 712bf13..035f054 100644
+--- a/tests/local-only-regression.test.js
++++ b/tests/local-only-regression.test.js
+@@ -114,26 +114,23 @@ describe('Local-Only Architecture & Regression Guard', () => {
+     expect(result.trustScore).toBe(45);
+   });
+ 
+-  it('operates the local adapter telemetry bus safely', () => {
++  it('does not fabricate local telemetry when no real transport exists', () => {
+     const adapter = new JokerAdapter();
+     const thermalGrid = adapter.getThermalGrid();
+     const scan = adapter.getRadarScanData();
+ 
+-    expect(Array.isArray(thermalGrid)).toBe(true);
+-    expect(thermalGrid).toHaveLength(64);
+-    expect(scan).toHaveProperty('angle');
+-    expect(Array.isArray(scan.devices)).toBe(true);
++    expect(thermalGrid).toEqual([]);
++    expect(scan).toEqual({ angle: null, devices: [] });
++    expect(adapter.connected).toBe(false);
+   });
+ 
+-  it('supports local profile isolation without browser hardware', () => {
++  it('does not simulate device isolation or a hardware kill command', async () => {
+     const adapter = new JokerAdapter();
+ 
+     adapter.setProfile('diagnostic');
+     expect(adapter.activeProfile).toBe('diagnostic');
+ 
+-    const result = adapter.killDevice();
+-    expect(result.status).toBe('TERMINATED');
+-    expect(adapter.activeProfile).toBe('isolated');
++    await expect(adapter.killDevice()).rejects.toThrow(/physical kill command is not implemented/);
+     expect(adapter.connected).toBe(false);
+   });
+ });
+diff --git a/tests/storage.test.js b/tests/storage.test.js
+new file mode 100644
+index 0000000..09d7be3
+--- /dev/null
++++ b/tests/storage.test.js
+@@ -0,0 +1,62 @@
++import { describe, expect, it } from 'vitest';
++import { Vault } from '../js/storage.js';
++
++function makeStorage() {
++  const values = new Map();
++  return {
++    getItem(key) { return values.has(key) ? values.get(key) : null; },
++    setItem(key, value) { values.set(key, String(value)); },
++    removeItem(key) { values.delete(key); },
++  };
++}
++
++async function withStorage(fn) {
++  const previousStorage = globalThis.localStorage;
++  const previousIndexedDB = globalThis.indexedDB;
++  globalThis.localStorage = makeStorage();
++  globalThis.indexedDB = {};
++  try {
++    return await fn(globalThis.localStorage);
++  } finally {
++    if (previousStorage === undefined) delete globalThis.localStorage;
++    else globalThis.localStorage = previousStorage;
++    if (previousIndexedDB === undefined) delete globalThis.indexedDB;
++    else globalThis.indexedDB = previousIndexedDB;
++  }
++}
++
++describe('Encrypted Vault', () => {
++  it('initializes a passphrase verifier and only unlocks with the same passphrase', async () => {
++    await withStorage(async (storage) => {
++      const vault = new Vault();
++      await vault.unlock('correct horse battery staple');
++      expect(vault.isUnlocked).toBe(true);
++      expect(storage.getItem('console-vault-salt')).toMatch(/^[0-9a-f]{32}$/i);
++      expect(storage.getItem('console-vault-key-check')).toBeTruthy();
++
++      vault.lock();
++      await expect(vault.unlock('wrong horse battery staple')).rejects.toThrow(/Incorrect vault passphrase/);
++      expect(vault.isUnlocked).toBe(false);
++      await vault.unlock('correct horse battery staple');
++      expect(vault.isUnlocked).toBe(true);
++    });
++  });
++
++  it('refuses to adopt a new passphrase for an existing vault with no verifier', async () => {
++    await withStorage(async (storage) => {
++      storage.setItem('console-vault-salt', '00112233445566778899aabbccddeeff');
++      const vault = new Vault();
++      await expect(vault.unlock('new passphrase value')).rejects.toThrow(/no passphrase verifier/);
++      expect(vault.isUnlocked).toBe(false);
++      expect(storage.getItem('console-vault-key-check')).toBe(null);
++    });
++  });
++
++  it('rejects short passphrases before initializing storage', async () => {
++    await withStorage(async (storage) => {
++      const vault = new Vault();
++      await expect(vault.unlock('short')).rejects.toThrow(/10 and 256 characters/);
++      expect(storage.getItem('console-vault-salt')).toBe(null);
++    });
++  });
++});
+-- 
+2.43.0
+
