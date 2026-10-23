@@ -3,9 +3,12 @@
  *
  * This class contains NO knowledge of the card's endpoints or payloads. Everything
  * protocol-specific comes from a descriptor (see card-protocol.js) that must be filled
- * in from captured evidence (tools/panel-sniffer.js or a HAR export).
+ * in from captured evidence (DevTools Network > WS, tools/panel-source-probe.js, or a HAR export).
  * It never fabricates data: without a valid descriptor, identity handshake and
  * validated packets, connect() fails and sample() returns null.
+ *
+ * WebSocket mode can take the device identity from the socket itself
+ * (identity: { from: 'websocket', parse, timeoutMs }), so no separate HTTP request is needed.
  */
 
 import { LatestPacketStore, requireFunction, requirePositiveNumber, validateIdentity, withProvenance } from './shared.js';
@@ -23,6 +26,10 @@ function validateRequestSpec(spec, label) {
   }
 }
 
+function identityFromSocket(descriptor) {
+  return descriptor?.telemetry?.mode === 'websocket' && descriptor?.identity?.from === 'websocket';
+}
+
 export function validateWifiDescriptor(descriptor) {
   if (!descriptor || descriptor.kind !== 'wifi') {
     throw new Error('No Wi-Fi card protocol descriptor is configured.');
@@ -36,13 +43,20 @@ export function validateWifiDescriptor(descriptor) {
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
     throw new Error('Card protocol descriptor baseUrl must use http: or https:.');
   }
-  validateRequestSpec(descriptor.identity, 'identity');
-  requireFunction(descriptor.identity.parse, 'identity.parse');
 
   const telemetry = descriptor.telemetry;
   if (!telemetry || (telemetry.mode !== 'poll' && telemetry.mode !== 'websocket')) {
     throw new Error('Card protocol descriptor telemetry.mode must be "poll" or "websocket".');
   }
+
+  if (identityFromSocket(descriptor)) {
+    requireFunction(descriptor.identity.parse, 'identity.parse');
+    requirePositiveNumber(descriptor.identity.timeoutMs, 'identity.timeoutMs');
+  } else {
+    validateRequestSpec(descriptor.identity, 'identity');
+    requireFunction(descriptor.identity.parse, 'identity.parse');
+  }
+
   if (telemetry.mode === 'poll') validateRequestSpec(telemetry, 'telemetry');
   else if (typeof telemetry.path !== 'string' || !telemetry.path) {
     throw new Error('Card protocol descriptor is missing telemetry.path.');
@@ -50,6 +64,12 @@ export function validateWifiDescriptor(descriptor) {
   requireFunction(telemetry.parse, 'telemetry.parse');
   requireFunction(telemetry.validate, 'telemetry.validate');
   requirePositiveNumber(telemetry.staleAfterMs, 'telemetry.staleAfterMs');
+  if (telemetry.silenceDisconnectMs !== undefined) {
+    requirePositiveNumber(telemetry.silenceDisconnectMs, 'telemetry.silenceDisconnectMs');
+  }
+  if (telemetry.openMessages !== undefined && !Array.isArray(telemetry.openMessages)) {
+    throw new Error('Card protocol descriptor telemetry.openMessages must be an array.');
+  }
   return base;
 }
 
@@ -69,6 +89,8 @@ export class CardWifiTransport {
     this._store = null;
     this._socket = null;
     this._failures = 0;
+    this._pendingIdentity = null;
+    this._silenceTimer = null;
     this._inflight = new Set();
     this._handlers = new Set();
     this.rejectedPackets = 0;
@@ -76,7 +98,9 @@ export class CardWifiTransport {
 
   async connect() {
     const base = validateWifiDescriptor(this.descriptor);
-    if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable in this browser.');
+    if (identityFromSocket(this.descriptor) === false && typeof this.fetchImpl !== 'function') {
+      throw new Error('fetch is unavailable in this browser.');
+    }
     if (this.pageProtocol === 'https:' && base.protocol === 'http:') {
       throw new Error(
         "This page is served over HTTPS, so the browser blocks requests to the card's plain-HTTP address. " +
@@ -91,16 +115,25 @@ export class CardWifiTransport {
     this._store = new LatestPacketStore({ staleAfterMs: telemetry.staleAfterMs, now: this.now });
 
     try {
-      const identityBody = await this._fetchBody(this.descriptor.identity);
-      this._assertCurrent(generation);
-      const identity = validateIdentity(this.descriptor.identity.parse(identityBody));
-      if (!identity) throw new Error('The device at this address did not identify itself as the Joker card.');
-
-      if (telemetry.mode === 'websocket') await this._openSocket(base, generation);
+      let identity;
+      if (identityFromSocket(this.descriptor)) {
+        const identityPromise = this._waitForSocketIdentity();
+        await this._openSocket(base, generation);
+        identity = await identityPromise;
+        this._assertCurrent(generation);
+        if (!identity) throw new Error('The card did not identify itself over the WebSocket in time.');
+      } else {
+        const identityBody = await this._fetchBody(this.descriptor.identity);
+        this._assertCurrent(generation);
+        identity = validateIdentity(this.descriptor.identity.parse(identityBody));
+        if (!identity) throw new Error('The device at this address did not identify itself as the Joker card.');
+        if (telemetry.mode === 'websocket') await this._openSocket(base, generation);
+      }
       this._assertCurrent(generation);
 
       this._identity = identity;
       this._connected = true;
+      this._armSilenceTimer();
       return { connected: true, deviceId: identity.id, deviceName: identity.name };
     } catch (error) {
       if (generation === this._generation) this._reset();
@@ -206,6 +239,49 @@ export class CardWifiTransport {
     }
   }
 
+  /**
+   * Resolves with the first identity the descriptor's identity.parse extracts from a frame,
+   * or null on timeout / cancellation. It never rejects, so it cannot become an unhandled rejection.
+   */
+  _waitForSocketIdentity() {
+    const { parse, timeoutMs } = this.descriptor.identity;
+    return new Promise((resolve) => {
+      const finish = (identity) => {
+        clearTimeout(timer);
+        if (this._pendingIdentity === pending) this._pendingIdentity = null;
+        resolve(identity);
+      };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      const pending = { parse, finish };
+      this._pendingIdentity = pending;
+    });
+  }
+
+  _onFrame(raw, generation) {
+    if (generation !== this._generation) return;
+    if (this._connected) this._armSilenceTimer();
+    const pending = this._pendingIdentity;
+    if (pending) {
+      try {
+        const identity = validateIdentity(pending.parse(raw));
+        if (identity) pending.finish(identity);
+      } catch { /* not an identity frame */ }
+    }
+    this._ingest(raw);
+  }
+
+  /** If no frame at all arrives for silenceDisconnectMs, treat the link as lost (a powered-off card may not close the socket). */
+  _armSilenceTimer() {
+    const limit = this.descriptor?.telemetry?.silenceDisconnectMs;
+    clearTimeout(this._silenceTimer);
+    this._silenceTimer = null;
+    if (!Number.isFinite(limit) || limit <= 0) return;
+    const generation = this._generation;
+    this._silenceTimer = setTimeout(() => {
+      if (generation === this._generation) this._handleUnexpectedDisconnect();
+    }, limit);
+  }
+
   _openSocket(base, generation) {
     const telemetry = this.descriptor.telemetry;
     const WS = this.WebSocketImpl;
@@ -229,15 +305,19 @@ export class CardWifiTransport {
           return;
         }
         this._socket = socket;
+        try {
+          for (const message of telemetry.openMessages ?? []) socket.send(message);
+        } catch (error) {
+          reject(new Error(`Could not send the descriptor's opening message: ${error?.message ?? error}`));
+          return;
+        }
         resolve();
       };
       socket.onerror = () => {
         clearTimeout(timer);
         reject(new Error('The card WebSocket reported an error.'));
       };
-      socket.onmessage = (event) => {
-        if (generation === this._generation) this._ingest(event.data);
-      };
+      socket.onmessage = (event) => this._onFrame(event.data, generation);
       socket.onclose = () => {
         if (generation === this._generation && this._socket === socket) this._handleUnexpectedDisconnect();
       };
@@ -256,6 +336,10 @@ export class CardWifiTransport {
     this._generation += 1;
     for (const controller of this._inflight) controller.abort();
     this._inflight.clear();
+    clearTimeout(this._silenceTimer);
+    this._silenceTimer = null;
+    if (this._pendingIdentity) this._pendingIdentity.finish(null);
+    this._pendingIdentity = null;
     const socket = this._socket;
     this._socket = null;
     if (socket) {

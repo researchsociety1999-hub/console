@@ -2,22 +2,27 @@
  * Card protocol descriptor.
  *
  * Stays null until it is filled in from EVIDENCE about the real card (captured panel traffic,
- * firmware source, or vendor documentation). While null, the dashboard cannot connect and shows
- * no readings. Do not guess values. See docs/CARD_PROTOCOL.md.
+ * the panel's own source code, firmware source, or vendor documentation). While null, the
+ * dashboard cannot connect and shows no readings. Do not guess values. See docs/CARD_PROTOCOL.md.
  *
  * Wi-Fi shape (all fields required unless marked optional):
  *   {
  *     kind: 'wifi',
- *     baseUrl: string,                       // address of the card's panel
- *     identity: { path, responseType, parse(body) -> { id, name } | null },
+ *     baseUrl: string,                       // address of the card's panel, e.g. its http://<ip> address
+ *     identity: EITHER
+ *       { path, responseType, parse(body) -> { id, name } | null }            // separate HTTP request
+ *       OR (websocket mode only)
+ *       { from: 'websocket', timeoutMs, parse(frame) -> { id, name } | null } // first matching frame
  *     telemetry: {
  *       mode: 'poll' | 'websocket',
- *       path: string,
+ *       path: string,                        // HTTP path (poll) or WebSocket path (websocket)
  *       responseType: 'json' | 'text' | 'arrayBuffer',   // poll mode only
- *       parse(rawBody) -> packet | null,
+ *       parse(rawFrameOrBody) -> packet | null,
  *       validate(packet) -> packet,          // must throw on bad or incomplete data
  *       staleAfterMs: number,                // app policy: how old a reading may be
- *       disconnectAfterFailures?: number     // poll mode, optional (default 3)
+ *       disconnectAfterFailures?: number,    // poll mode (default 3)
+ *       silenceDisconnectMs?: number,        // websocket mode: no frame for this long = link lost
+ *       openMessages?: Array<string | ArrayBuffer>   // sent once after the socket opens, if the card needs it
  *     },
  *     allowCommands?: boolean,               // default off
  *     commands?: { [name]: { method, path, responseType, headers?, buildBody(params), parseAck(body) -> { acknowledged: true } } }

@@ -1,10 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { CardWifiTransport } from '../js/transports/card-wifi-transport.js';
 import { CardBleTransport } from '../js/transports/card-ble-transport.js';
 
-// Test-only doubles stand in for the browser's fetch/Bluetooth APIs. They are not a card
-// simulator, and no application module imports them.
+// Test-only doubles stand in for the browser's fetch/WebSocket/Bluetooth APIs. They are not a
+// card simulator, and no application module imports them.
 const jsonResponse = (body) => ({ ok: true, status: 200, json: async () => body });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+class FakeWebSocket {
+  static instances = [];
+  constructor(url) {
+    this.url = url;
+    this.sent = [];
+    this.closed = false;
+    FakeWebSocket.instances.push(this);
+  }
+  send(data) { this.sent.push(data); }
+  close() { this.closed = true; }
+  open() { this.onopen?.(); }
+  message(data) { this.onmessage?.({ data }); }
+  drop() { this.onclose?.(); }
+}
 
 function makeDescriptor() {
   return {
@@ -29,7 +45,31 @@ function makeDescriptor() {
   };
 }
 
-describe('CardWifiTransport', () => {
+function makeSocketDescriptor(telemetryExtra = {}, identityExtra = {}) {
+  return {
+    kind: 'wifi',
+    baseUrl: 'http://card.test',
+    identity: {
+      from: 'websocket',
+      timeoutMs: 1000,
+      parse: (frame) => (typeof frame === 'string' && frame.startsWith('id:') ? { id: frame.slice(3), name: 'Joker' } : null),
+      ...identityExtra
+    },
+    telemetry: {
+      mode: 'websocket',
+      path: '/socket-path',
+      staleAfterMs: 1000,
+      parse: (frame) => (typeof frame === 'string' && frame.startsWith('v:') ? { value: Number(frame.slice(2)) } : null),
+      validate: (packet) => {
+        if (!Number.isFinite(packet.value)) throw new Error('invalid packet');
+        return packet;
+      },
+      ...telemetryExtra
+    }
+  };
+}
+
+describe('CardWifiTransport (HTTP)', () => {
   it('refuses to connect without a descriptor', async () => {
     const transport = new CardWifiTransport({ descriptor: null, fetchImpl: async () => jsonResponse({}) });
     await expect(transport.connect()).rejects.toThrow(/No Wi-Fi card protocol descriptor/);
@@ -91,6 +131,82 @@ describe('CardWifiTransport', () => {
     });
     await transport.connect();
     await expect(transport.invokeCommand('anything')).rejects.toThrow(/Commands are disabled/);
+  });
+});
+
+describe('CardWifiTransport (WebSocket)', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances.length = 0;
+  });
+
+  const make = (descriptor) => new CardWifiTransport({ descriptor, WebSocketImpl: FakeWebSocket, pageProtocol: 'http:' });
+
+  it('connects only after a frame identifies the card, and then returns validated frames', async () => {
+    const transport = make(makeSocketDescriptor());
+    const connecting = transport.connect();
+    const socket = FakeWebSocket.instances[0];
+    expect(socket.url).toBe('ws://card.test/socket-path');
+
+    socket.open();
+    socket.message('id:card-9');
+    expect(await connecting).toEqual({ connected: true, deviceId: 'card-9', deviceName: 'Joker' });
+
+    socket.message('v:21');
+    const packet = await transport.sample();
+    expect(packet.value).toBe(21);
+    expect(packet.provenance).toMatchObject({ source: 'card-wifi', deviceId: 'card-9' });
+
+    socket.message('v:not-a-number');
+    expect(transport.rejectedPackets).toBe(1);
+  });
+
+  it('fails when the card never identifies itself', async () => {
+    const transport = make(makeSocketDescriptor({}, { timeoutMs: 20 }));
+    const connecting = transport.connect();
+    FakeWebSocket.instances[0].open();
+    await expect(connecting).rejects.toThrow(/did not identify itself over the WebSocket/);
+    expect(await transport.sample()).toBeNull();
+  });
+
+  it('sends the descriptor opening messages once the socket opens', async () => {
+    const transport = make(makeSocketDescriptor({ openMessages: ['hello-from-descriptor'] }));
+    const connecting = transport.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message('id:card-9');
+    await connecting;
+    expect(socket.sent).toEqual(['hello-from-descriptor']);
+  });
+
+  it('notifies the disconnect handler when the socket closes, and returns no stale data', async () => {
+    const transport = make(makeSocketDescriptor());
+    let lost = 0;
+    transport.onDisconnect(() => { lost += 1; });
+    const connecting = transport.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message('id:card-9');
+    await connecting;
+    socket.message('v:3');
+
+    socket.drop();
+    expect(lost).toBe(1);
+    expect(await transport.sample()).toBeNull();
+  });
+
+  it('treats a silent socket as a lost link', async () => {
+    const transport = make(makeSocketDescriptor({ silenceDisconnectMs: 20 }));
+    let lost = 0;
+    transport.onDisconnect(() => { lost += 1; });
+    const connecting = transport.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message('id:card-9');
+    await connecting;
+
+    await sleep(80);
+    expect(lost).toBe(1);
+    expect(await transport.sample()).toBeNull();
   });
 });
 
