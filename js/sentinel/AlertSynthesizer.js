@@ -2,6 +2,7 @@ import { CFG } from './constants.js';
 import { clamp } from './stats.js';
 
 const LABELS = { nfc_detected: 'an NFC tag was detected', ble_new: 'a new BLE device appeared', temp_rising: 'the temperature began rising' };
+const VERIFY_TRUST = 0.4; // below this, with DEGRADED data, the recommendation becomes a sensor check
 
 export class AlertSynthesizer {
   constructor({ now = Date.now } = {}) { this.now = now; }
@@ -36,6 +37,11 @@ export class AlertSynthesizer {
     const causeConfidence = ctx.explanation?.confidence ?? 0;
     alert.predicted_state = alert.predictedState;
     alert.confidence_score = Number(clamp(ctx.trust * (0.5 + 0.5 * forecastConfidence) * (0.75 + 0.25 * causeConfidence), 0, 1).toFixed(3));
+    // Low trust plus degraded data: do not send the operator to a diagnostic, send them to check the sensor first.
+    if (ctx.trust < VERIFY_TRUST && alert.integrityStatus === 'DEGRADED') {
+      alert.recommendation = 'VERIFY SENSOR HEALTH.';
+      alert.action = 'FLAG_FOR_REVIEW';
+    }
     return alert;
   }
 
@@ -47,9 +53,11 @@ export class AlertSynthesizer {
     const trend = alert.data_payload?.trend;
     if (trend && trend !== 'stable') parts.push(`the temperature is ${trend} (${slope >= 0 ? '+' : ''}${slope.toFixed(2)}°C/cycle)`);
     if (ctx.forecast?.ttcCycles != null && alert.type === 'TEMP_PREDICTED') parts.push(`the system predicts the ${CFG.TEMP_CRITICAL_C}°C threshold will be breached in ${Math.ceil(ctx.forecast.ttcCycles)} cycle(s)`);
-    if (!parts.length) return alert.message;
+    // A low-confidence alert is still shown, but it says so plainly.
+    const note = Number.isFinite(alert.confidence_score) && alert.confidence_score < CFG.LOW_CONFIDENCE ? ' Low confidence: please check this reading yourself.' : '';
+    if (!parts.length) return `${alert.message}${note}`;
     const text = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
-    return `${alert.severity}: ${text}.`;
+    return `${alert.severity}: ${text}.${note}`;
   }
 
   build(data, status, ctx) {

@@ -7,6 +7,9 @@ const ACTION_LABELS = {
   SHUTDOWN: 'Shut down'
 };
 
+const SEVERITY_LEVELS = ['critical', 'high', 'medium', 'low'];
+const LOW_TRUST = 0.5; // below this the main card shows a caution shimmer
+
 export class UIRenderer {
   constructor({ doc = globalThis.document, bus, raf = globalThis.requestAnimationFrame?.bind(globalThis), primaryMetric = null } = {}) {
     this.doc = doc;
@@ -77,8 +80,17 @@ export class UIRenderer {
       card.setAttribute('data-state', alert ? alertState : 'none');
       card.setAttribute('data-severity', (alert?.severity ?? 'none').toLowerCase());
     }
+    const severity = (alert?.severity ?? '').toLowerCase();
+    if (card?.classList) {
+      for (const level of SEVERITY_LEVELS) card.classList.toggle(`border-${level}`, level === severity);
+    }
+
     const trust = state.context?.trust;
     this.set('trustBadge', Number.isFinite(trust) ? `Trust ${Math.round(trust * 100)}%` : '');
+    const mainCard = this.el('mainCard');
+    // Low trust is shown as a caution shimmer. High trust gets no decoration: it has to be earned by the data, not displayed as a reward.
+    if (mainCard?.classList) mainCard.classList.toggle('trust-shimmer', Number.isFinite(trust) && trust < LOW_TRUST);
+
     this.set('rootCause', alert && !alert.metric ? (alert.rootCause?.summary ?? '') : '');
     const ack = this.el('ackButton');
     if (ack) ack.disabled = !alert || alertState === 'ACKNOWLEDGED' || alertState === 'RESOLVED';
@@ -150,6 +162,7 @@ export class UIRenderer {
   animateNumberTo(id, target) {
     const e = this.el(id);
     if (!e) return;
+    if (!Number.isFinite(target)) { e.textContent = 'N/A'; return; }
     const start = parseFloat(e.textContent) || target;
     if (!this.raf) { e.textContent = target.toFixed(1); return; }
     const t0 = Date.now();
