@@ -35,6 +35,16 @@ export class UIRenderer {
     }
     this.set('alertExplanation', alert?.explanation ?? '');
     this.set('confidenceScore', alert ? `${Math.round((alert.confidence_score ?? 0) * 100)}%` : '');
+
+    const chain = Array.isArray(alert?.causality_chain) ? alert.causality_chain : [];
+    this.set('alertChain', chain.map((c) => `${String(c.kind).replace(/_/g, ' ')} (${c.cyclesAgo} cycle(s) earlier, ${c.relation ?? 'co-occurred'})`).join(' → '));
+    const forecast = Number.isFinite(alert?.ttcSeconds) ? `Forecast: ~${Math.round(alert.ttcSeconds)}s to threshold` : '';
+    const forecastConfidence = Number.isFinite(alert?.forecastConfidence) ? ` (confidence ${Math.round(alert.forecastConfidence * 100)}%)` : '';
+    this.set('alertForecast', forecast ? forecast + forecastConfidence : '');
+    const age = Number.isFinite(sample?.timestamp) ? Math.max(0, Math.round((Date.now() - sample.timestamp) / 1000)) : null;
+    this.set('freshnessTag', age === null ? '' : age < 2 ? 'Last update: just now' : `Last update: ${age}s ago`);
+    this.set('dataQualityTag', sample ? `Data quality: ${alert?.integrityStatus ?? 'OK'}` : '');
+
     const ghost = this.el('ghost-listen');
     if (ghost) ghost.style.display = state.cardState === 'lost' ? 'flex' : 'none';
   }

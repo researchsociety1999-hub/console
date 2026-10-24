@@ -1,12 +1,15 @@
 import { CFG } from './constants.js';
 import { clamp } from './stats.js';
+import { MetricForecaster } from './MetricForecaster.js';
 
 const REQUIRED = ['id', 'severity', 'type', 'message', 'createdAt', 'integrityStatus'];
 const ALERT_EVENT = { TEMP_PREDICTED: 'threshold_predicted', TEMP_CRITICAL: 'threshold_crossed' };
 
 export class FirewallService {
-  constructor({ bus, store, telemetry, graph, horizon, meta, synthesizer, now = Date.now }) {
+  /** metrics: optional array of { key, label?, unit?, direction, threshold, horizonSeconds, minConfidence? } to forecast. None are built in. */
+  constructor({ bus, store, telemetry, graph, horizon, meta, synthesizer, metrics = [], now = Date.now }) {
     Object.assign(this, { bus, store, telemetry, graph, horizon, meta, synthesizer, now });
+    this.forecasters = metrics.map((config) => new MetricForecaster(config));
     this.prevTrend = 'stable';
     this.risingId = null;
   }
@@ -61,9 +64,10 @@ export class FirewallService {
     this.graph.observe(enriched);
     const explanation = this.graph.explain('temp');
     const forecast = this.horizon.observe(enriched);
+    const metricForecasts = this.forecasters.map((forecaster) => forecaster.observe(enriched.timestamp, enriched[forecaster.config.key]));
     this.emitSampleEvents(enriched, forecast.cycle);
     this.meta.observe(enriched, forecast, status, explanation);
-    const ctx = { trust, explanation, forecast, adjust: this.meta.adjustments() };
+    const ctx = { trust, explanation, forecast, metricForecasts, adjust: this.meta.adjustments() };
     this.store.patch({ cardState: 'manifested', lastSample: enriched, context: ctx });
     this.bus.emit('telemetry:sample', { sample: enriched, ctx });
 

@@ -3,6 +3,8 @@ import { clamp, mean, std, pearson } from './stats.js';
 const NODES = ['temp', 'battery', 'bleActivity', 'nfcActivity', 'quality'];
 const PRIORS = { 'battery->temp': -0.2, 'bleActivity->temp': 0.3, 'nfcActivity->temp': 0.3, 'quality->temp': 0.1 };
 const WINDOW = 40;
+// These are hand-written time-window rules. A link means "happened shortly before" (co-occurred),
+// NOT a proven cause. The UI and explanations must say so.
 const EVENT_RULES = {
   nfc_detected: ['temp_rising'],
   ble_new: ['temp_rising'],
@@ -62,7 +64,7 @@ export class GraphService {
         const e = this.events.get(cid);
         if (!e || seen.has(cid)) continue;
         seen.add(cid);
-        chain.unshift({ id: e.id, kind: e.kind, cyclesAgo: node.cycle - e.cycle });
+        chain.unshift({ id: e.id, kind: e.kind, cyclesAgo: node.cycle - e.cycle, relation: 'co-occurred' });
         next.push(...e.causes.slice(0, 1));
       }
       frontier = next;
