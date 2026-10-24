@@ -12,11 +12,20 @@ import { ActionService } from './ActionService.js';
 const SESSION_KEY = 'sentinel-console-session-v1';
 
 export class SentinelConsole {
-  constructor({ rng, now = Date.now, confirm, commandBridge, telemetry, metrics = [], storage = globalThis.sessionStorage, setTimer = setTimeout, clearTimer = clearTimeout, detectDelayMs } = {}) {
+  /**
+   * autoAct (default true): run an alert's action automatically. The live page sets it to false so actions run only when the operator clicks.
+   * resolveAfterCycles (default null): mark the latest alert RESOLVED after this many consecutive cycles with no alert or repeat.
+   */
+  constructor({ rng, now = Date.now, confirm, commandBridge, telemetry, metrics = [], autoAct = true, resolveAfterCycles = null, storage = globalThis.sessionStorage, setTimer = setTimeout, clearTimer = clearTimeout, detectDelayMs } = {}) {
+    if (resolveAfterCycles !== null && (!Number.isInteger(resolveAfterCycles) || resolveAfterCycles < 1)) throw new Error('resolveAfterCycles must be a positive integer or null.');
     this.now = now;
     this.storage = storage;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
+    this.autoAct = autoAct;
+    this.resolveAfterCycles = resolveAfterCycles;
+    this.quietCycles = 0;
+    this.suppressedThisCycle = false;
     this.bus = new EventBus();
     this.store = new Store(this.bus);
     this.telemetry = telemetry ?? new TelemetryEngine({ rng, now, detectDelayMs });
@@ -29,11 +38,12 @@ export class SentinelConsole {
     this.running = false;
     this.timer = null;
     this.bus.on('alert:accepted', () => this.persist());
+    this.bus.on('alert:suppressed', () => { this.suppressedThisCycle = true; });
   }
 
   async handleAlertCascade(alert) {
     try {
-      const result = await this.actions.sendAction(alert);
+      const result = this.autoAct ? await this.actions.sendAction(alert) : { ok: false, reason: 'AWAITING_OPERATOR' };
       this.bus.emit('alert:cascade', { alert, result });
       if (alert.severity === 'CRITICAL' || alert.severity === 'HIGH') {
         this.bus.emit('feedback:buzzer', { freq: alert.severity === 'CRITICAL' ? 880 : 440, duration: 500 });
@@ -45,10 +55,39 @@ export class SentinelConsole {
     }
   }
 
+  /** Operator acknowledgement. This is recorded in the console only; it sends nothing to the card. */
+  acknowledge(alert = this.store.get().lastAlert) {
+    if (!alert || alert.state === 'RESOLVED') return { ok: false, reason: 'NO_ACTIVE_ALERT' };
+    alert.state = 'ACKNOWLEDGED';
+    alert.acknowledgedAt = this.now();
+    this.store.patch({ lastAlert: alert });
+    this.bus.emit('alert:acknowledged', alert);
+    return { ok: true };
+  }
+
+  resolveActive() {
+    const last = this.store.get().lastAlert;
+    if (!last || last.state === 'RESOLVED') return false;
+    last.state = 'RESOLVED';
+    last.resolvedAt = this.now();
+    this.store.patch({ lastAlert: last, alertHistory: [...this.store.get().alertHistory] });
+    this.bus.emit('alert:resolved', last);
+    return true;
+  }
+
+  noteCycle({ alert, rejected }) {
+    if (alert || this.suppressedThisCycle) { this.quietCycles = 0; return; }
+    if (rejected) return; // no fresh data: neither confirms nor clears an alert
+    this.quietCycles += 1;
+    if (this.resolveAfterCycles && this.quietCycles >= this.resolveAfterCycles) this.resolveActive();
+  }
+
   async runMonitoringCycle() {
-    const { alert } = await this.firewall.process();
-    if (alert) await this.handleAlertCascade(alert);
-    return alert;
+    this.suppressedThisCycle = false;
+    const result = await this.firewall.process();
+    if (result.alert) await this.handleAlertCascade(result.alert);
+    this.noteCycle(result);
+    return result.alert;
   }
 
   startMonitoringLoop() {

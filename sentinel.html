@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentinel Console - Live Card</title>
+  <link rel="stylesheet" href="css/sentinel.css">
+</head>
+<body class="state-lost">
+  <header class="bar">
+    <h1>SENTINEL CONSOLE</h1>
+    <span id="connectionState" class="connection" role="status" aria-live="polite">NOT CONNECTED</span>
+    <span id="trustBadge" class="badge" title="How much the console trusts the current data"></span>
+    <button id="connectButton" type="button">Connect card</button>
+    <button id="disconnectButton" type="button" disabled>Disconnect</button>
+  </header>
+  <p id="connectionDetail" class="detail-line" role="status" aria-live="polite"></p>
+
+  <main class="grid">
+    <section id="mainCard" class="card" aria-labelledby="mainTitle">
+      <h2 id="mainTitle">SGP Card Joker</h2>
+      <div id="ghost-listen" class="ghost">
+        <div class="ghost-beacon" aria-hidden="true"></div>
+        <p>Listening for the card&hellip;</p>
+      </div>
+      <p class="reading">
+        <span id="primaryLabel" class="label"></span>
+        <span id="primaryReading" class="value">--</span>
+        <span id="primaryUnit" class="unit"></span>
+        <span id="trendArrow" class="trend-arrow stable" aria-hidden="true"></span>
+      </p>
+      <p id="freshnessTag" class="muted"></p>
+      <p id="dataQualityTag" class="muted"></p>
+      <p id="device-status" class="muted"></p>
+    </section>
+
+    <section id="alertCard" class="card" data-state="none" data-severity="none" aria-labelledby="alertTitle">
+      <h2 id="alertTitle">Alert</h2>
+      <p><span id="alertMessage" class="alert-badge"></span> <span id="alertState" class="state-tag"></span></p>
+      <p id="alertExplanation"></p>
+      <p id="alertChain" class="muted"></p>
+      <p id="rootCause" class="muted"></p>
+      <p id="alertForecast"></p>
+      <p class="muted">Predicted state: <span id="predictedStateBadgeText">NOMINAL</span> &middot; Confidence: <span id="confidenceScore"></span></p>
+      <div class="actions">
+        <button id="ackButton" type="button" disabled>Acknowledge</button>
+        <button id="actionButton" type="button" disabled>No action</button>
+        <button id="detailsButton" type="button">Details</button>
+      </div>
+      <p id="actionResult" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <aside id="detailCard" class="overlay" role="dialog" aria-labelledby="detailTitle" hidden>
+    <h2 id="detailTitle">Details</h2>
+    <div id="detailBody"></div>
+    <button id="detailClose" type="button">Close</button>
+  </aside>
+
+  <footer>
+    <label><input type="checkbox" id="soundToggle"> Alert tone (plays on this computer's speaker, not on the card)</label>
+  </footer>
+
+  <script type="module" src="js/sentinel/main.js"></script>
+</body>
+</html>

@@ -87,9 +87,11 @@ export class FirewallService {
     if (!alert || !REQUIRED.every((k) => k in alert)) { if (alert) console.warn('Firewall rejected malformed alert', alert); return null; }
     const history = this.store.get().alertHistory;
     const last = history[history.length - 1];
-    if (last && last.type === alert.type && alert.severity !== 'CRITICAL') {
+    // A repeat of an alert that is still open is suppressed; a repeat of a RESOLVED alert is a new alert.
+    if (last && last.type === alert.type && last.state !== 'RESOLVED' && alert.severity !== 'CRITICAL') {
       last.updatedAt = this.now();
-      last.state = 'SUPPRESSED';
+      last.repeatCount = (last.repeatCount ?? 0) + 1;
+      if (last.state !== 'ACKNOWLEDGED') last.state = 'SUPPRESSED'; // never overwrite an operator acknowledgement
       this.bus.emit('alert:suppressed', last);
       return null;
     }
