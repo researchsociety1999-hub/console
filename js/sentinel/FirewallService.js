@@ -42,6 +42,8 @@ export class FirewallService {
     const stage = (name) => this.bus.emit('firewall:stage', { stage: name });
     stage('input');
     if (!(await this.telemetry.detectDevice())) { this.store.patch({ cardState: 'lost' }); return this.reject('input', 'DEVICE_NOT_DETECTED'); }
+    // A device that comes back after being lost must be readable again (previously the state stayed 'lost' forever).
+    if (this.store.get().cardState === 'lost') this.store.patch({ cardState: 'ghost' });
     const raw = this.telemetry.readRawSample(this.store.get().cardState);
     const { isValid, data, status } = this.telemetry.checkDeviceData(raw);
     if (!isValid) return this.reject('input', 'INVALID_OR_OFFLINE');

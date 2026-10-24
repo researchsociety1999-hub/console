@@ -12,7 +12,7 @@ import { ActionService } from './ActionService.js';
 const SESSION_KEY = 'sentinel-console-session-v1';
 
 export class SentinelConsole {
-  constructor({ rng, now = Date.now, confirm, telemetry, storage = globalThis.sessionStorage, setTimer = setTimeout, clearTimer = clearTimeout, detectDelayMs } = {}) {
+  constructor({ rng, now = Date.now, confirm, commandBridge, telemetry, storage = globalThis.sessionStorage, setTimer = setTimeout, clearTimer = clearTimeout, detectDelayMs } = {}) {
     this.now = now;
     this.storage = storage;
     this.setTimer = setTimer;
@@ -25,7 +25,7 @@ export class SentinelConsole {
     this.horizon = new HorizonPredictor({ getAdjustments: () => this.meta.adjustments() });
     this.synthesizer = new AlertSynthesizer({ now });
     this.firewall = new FirewallService({ bus: this.bus, store: this.store, telemetry: this.telemetry, graph: this.graph, horizon: this.horizon, meta: this.meta, synthesizer: this.synthesizer, now });
-    this.actions = new ActionService({ bus: this.bus, store: this.store, telemetry: this.telemetry, confirm, now });
+    this.actions = new ActionService({ bus: this.bus, store: this.store, telemetry: this.telemetry, confirm, commandBridge, now });
     this.running = false;
     this.timer = null;
     this.bus.on('alert:accepted', () => this.persist());
