@@ -1,12 +1,15 @@
 import { CFG } from './constants.js';
 import { clamp } from './stats.js';
+import { MetricForecaster } from './MetricForecaster.js';
 
 const REQUIRED = ['id', 'severity', 'type', 'message', 'createdAt', 'integrityStatus'];
 const ALERT_EVENT = { TEMP_PREDICTED: 'threshold_predicted', TEMP_CRITICAL: 'threshold_crossed' };
 
 export class FirewallService {
-  constructor({ bus, store, telemetry, graph, horizon, meta, synthesizer, now = Date.now }) {
+  /** metrics: optional array of { key, label?, unit?, direction, threshold, horizonSeconds, minConfidence? } to forecast. None are built in. */
+  constructor({ bus, store, telemetry, graph, horizon, meta, synthesizer, metrics = [], now = Date.now }) {
     Object.assign(this, { bus, store, telemetry, graph, horizon, meta, synthesizer, now });
+    this.forecasters = metrics.map((config) => new MetricForecaster(config));
     this.prevTrend = 'stable';
     this.risingId = null;
   }
@@ -42,6 +45,8 @@ export class FirewallService {
     const stage = (name) => this.bus.emit('firewall:stage', { stage: name });
     stage('input');
     if (!(await this.telemetry.detectDevice())) { this.store.patch({ cardState: 'lost' }); return this.reject('input', 'DEVICE_NOT_DETECTED'); }
+    // A device that comes back after being lost must be readable again (previously the state stayed 'lost' forever).
+    if (this.store.get().cardState === 'lost') this.store.patch({ cardState: 'ghost' });
     const raw = this.telemetry.readRawSample(this.store.get().cardState);
     const { isValid, data, status } = this.telemetry.checkDeviceData(raw);
     if (!isValid) return this.reject('input', 'INVALID_OR_OFFLINE');
@@ -59,9 +64,10 @@ export class FirewallService {
     this.graph.observe(enriched);
     const explanation = this.graph.explain('temp');
     const forecast = this.horizon.observe(enriched);
+    const metricForecasts = this.forecasters.map((forecaster) => forecaster.observe(enriched.timestamp, enriched[forecaster.config.key]));
     this.emitSampleEvents(enriched, forecast.cycle);
     this.meta.observe(enriched, forecast, status, explanation);
-    const ctx = { trust, explanation, forecast, adjust: this.meta.adjustments() };
+    const ctx = { trust, explanation, forecast, metricForecasts, adjust: this.meta.adjustments() };
     this.store.patch({ cardState: 'manifested', lastSample: enriched, context: ctx });
     this.bus.emit('telemetry:sample', { sample: enriched, ctx });
 
@@ -81,9 +87,11 @@ export class FirewallService {
     if (!alert || !REQUIRED.every((k) => k in alert)) { if (alert) console.warn('Firewall rejected malformed alert', alert); return null; }
     const history = this.store.get().alertHistory;
     const last = history[history.length - 1];
-    if (last && last.type === alert.type && alert.severity !== 'CRITICAL') {
+    // A repeat of an alert that is still open is suppressed; a repeat of a RESOLVED alert is a new alert.
+    if (last && last.type === alert.type && last.state !== 'RESOLVED' && alert.severity !== 'CRITICAL') {
       last.updatedAt = this.now();
-      last.state = 'SUPPRESSED';
+      last.repeatCount = (last.repeatCount ?? 0) + 1;
+      if (last.state !== 'ACKNOWLEDGED') last.state = 'SUPPRESSED'; // never overwrite an operator acknowledgement
       this.bus.emit('alert:suppressed', last);
       return null;
     }

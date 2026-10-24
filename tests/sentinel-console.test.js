@@ -86,9 +86,10 @@ test('Holt predictor: rising ramp gives finite time-to-threshold and ordered hor
   assert.equal(flat.ttcCycles, null);
 });
 
-test('action gate: sensitive/IMMEDIATE actions blocked unless human confirms (strict true); kill switch; allow-list', async () => {
+test('action gate: sensitive/IMMEDIATE actions blocked unless human confirms (strict true); kill switch; allow-list; the card must acknowledge', async () => {
+  const acknowledge = async () => ({ acknowledged: true });
   for (const [confirm, ok] of [[async () => false, false], [async () => 'yes', false], [async () => true, true]]) {
-    const app = mk(7, { confirm, rng: () => 0.5 });
+    const app = mk(7, { confirm, rng: () => 0.5, commandBridge: acknowledge });
     app.store.patch({ cardState: 'manifested', lastSample: { temperatureC: 40 } });
     const r = await app.actions.sendAction({ type: 'TEMP_CRITICAL', recommendation: 'IMMEDIATE ACTION: Shut down system!', action: 'SHUTDOWN' });
     assert.equal(r.ok, ok);
@@ -97,6 +98,30 @@ test('action gate: sensitive/IMMEDIATE actions blocked unless human confirms (st
   assert.equal((await a.actions.sendAction({ action: 'MONITOR', recommendation: 'x' })).reason, 'KILL_SWITCH_ENGAGED');
   const b = mk(7, { rng: () => 0.5 }); b.store.patch({ lastSample: { temperatureC: 30 } });
   assert.equal((await b.actions.sendAction({ action: 'FORMAT_DISK', recommendation: 'x' })).reason, 'ACTION_NOT_ALLOWED');
+
+  // Without a card command channel, an action that needs the card fails instead of pretending to succeed.
+  const c = mk(7, { confirm: async () => true, rng: () => 0.5 }); c.store.patch({ cardState: 'manifested', lastSample: { temperatureC: 40 } });
+  const blocked = await c.actions.sendAction({ type: 'TEMP_CRITICAL', recommendation: 'Run Cooling Diagnostic.', action: 'RUN_COOLING_DIAGNOSTIC' });
+  assert.equal(blocked.ok, false); assert.equal(blocked.reason, 'NO_CARD_COMMAND_CAPABILITY');
+  // Local-only actions still work without a card command channel and report that nothing was sent to the card.
+  const local = await c.actions.sendAction({ action: 'LOG', recommendation: 'x' });
+  assert.equal(local.ok, true); assert.equal(local.sentToCard, false);
+  // A card that does not acknowledge the command is a failure.
+  const d = mk(7, { rng: () => 0.5, commandBridge: async () => ({ acknowledged: false }) }); d.store.patch({ lastSample: { temperatureC: 30 } });
+  assert.equal((await d.actions.sendAction({ action: 'RESTART_MODULE', recommendation: 'x' })).reason, 'CARD_DID_NOT_ACKNOWLEDGE');
+});
+
+test('a device that returns after being lost is read again (no stuck lost state)', async () => {
+  let present = true;
+  class Flaky extends TelemetryEngine {
+    constructor(now) { super({ detectDelayMs: 0, now, rng: () => 0.5 }); }
+    async detectDevice() { return present; }
+  }
+  let c = 1e6; const now = () => (c += 1);
+  const app = new SentinelConsole({ now, telemetry: new Flaky(now), storage: null });
+  await app.runMonitoringCycle(); assert.equal(app.store.get().cardState, 'manifested');
+  present = false; await app.runMonitoringCycle(); assert.equal(app.store.get().cardState, 'lost');
+  present = true; await app.runMonitoringCycle(); assert.equal(app.store.get().cardState, 'manifested');
 });
 
 test('loop never overlaps cycles; UIRenderer is inert without a DOM', async () => {
