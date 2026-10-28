@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "npx http-server . -p 3000 -a 0.0.0.0 --cors",
+    "dev:card": "npx http-server . -p 3000 -a 127.0.0.1 --proxy http://192.168.4.1",
     "start": "npx http-server . -p 3000 -a 0.0.0.0 --cors",
     "test": "vitest run"
   },
