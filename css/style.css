@@ -82,7 +82,39 @@ input, textarea, select {
   margin: 0;
 }
 
-#aegis-header .header-readouts { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--text-dim); }
+#aegis-header .header-readouts { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--text-dim); align-items: center; flex-wrap: wrap; }
+#aegis-header .header-controls { justify-content: flex-end; }
+.transport-label { color: var(--text-dim); font-size: 0.72rem; }
+#transport-mode { min-width: 8.5rem; }
+
+#connection-hint {
+  margin: 0;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel-alt);
+}
+
+#view-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+}
+
+#view-tabs [data-view-tab] {
+  flex: 0 0 auto;
+  min-width: 5.5rem;
+  opacity: 0.72;
+}
+
+#view-tabs [data-view-tab].is-active,
+#view-tabs [data-view-tab][aria-selected="true"] {
+  opacity: 1;
+  border-color: var(--accent-cyber);
+  color: var(--accent-cyber);
+}
 
 #predicted-state-badge {
   font-size: 0.75rem;
@@ -99,13 +131,33 @@ input, textarea, select {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 0.95fr;
-  grid-template-rows: 1fr 1fr;
-  grid-template-areas:
-    "thermal alerts network audit"
-    "nfc device fleet audit";
   gap: 0.5rem;
   overflow: hidden;
+}
+
+#aegis-viewport > section { display: none; }
+#aegis-viewport[data-active-view="ops"] > section[data-views~="ops"],
+#aegis-viewport[data-active-view="sensors"] > section[data-views~="sensors"],
+#aegis-viewport[data-active-view="admin"] > section[data-views~="admin"] {
+  display: flex;
+}
+
+#aegis-viewport[data-active-view="ops"] {
+  grid-template-columns: 1.1fr 1fr 1fr 0.9fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: "thermal alerts network device";
+}
+
+#aegis-viewport[data-active-view="sensors"] {
+  grid-template-columns: 1.1fr 1fr 1fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: "thermal nfc fleet";
+}
+
+#aegis-viewport[data-active-view="admin"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: "audit";
 }
 
 #thermal-recon-panel { grid-area: thermal; }
@@ -219,6 +271,13 @@ input, textarea, select {
 ::-webkit-scrollbar-thumb { background: var(--accent-cyber-dim); border-radius: 8px; }
 
 @media (max-width: 900px) {
-  #aegis-viewport { grid-template-columns: 1fr 1fr; grid-template-areas: "thermal network" "alerts nfc" "device fleet" "audit audit"; }
+  #aegis-viewport[data-active-view="ops"],
+  #aegis-viewport[data-active-view="sensors"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas: "thermal alerts" "network device";
+  }
+  #aegis-viewport[data-active-view="sensors"] {
+    grid-template-areas: "thermal nfc" "fleet fleet";
+  }
   #app { height: auto; overflow: auto; }
 }

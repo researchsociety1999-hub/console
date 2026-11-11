@@ -4,10 +4,13 @@
  * Keeps the small contract the existing tests rely on (setProfile(name), killDevice(),
  * getThermalGrid(), getRadarScanData() -> { angle, devices }) and the full local
  * audit/telemetry API that js/app.js depends on.
+ *
+ * Optional real card transport: pass { transport, mapPacket } or call bindTransport().
+ * Without a transport, connect() stays on the local simulation bus (tests / demo mode).
  */
 
 export class JokerAdapter {
-  constructor() {
+  constructor({ transport = null, mapPacket = null } = {}) {
     this.connected = false;
     this.transport = 'Simulated';
     this.activeProfile = 'default';
@@ -16,6 +19,11 @@ export class JokerAdapter {
     this.connectionProfile = { transport: 'Simulated' };
     this.stealthMode = false;
     this.devicePoweredOff = false;
+    this._cardTransport = transport;
+    this._mapPacket = typeof mapPacket === 'function' ? mapPacket : null;
+    this._cardIdentity = null;
+    this._unsubDisconnect = null;
+    this._liveMode = false;
     this._ambientBaseline = 27 + Math.random() * 2;
     this._driftPhase = Math.random() * Math.PI * 2;
     this._heatSources = [{ row: 3, col: 5, intensity: 3.2 }];
@@ -30,6 +38,19 @@ export class JokerAdapter {
     this._nfcReader = null;
     this._nfcEventTimestamps = [];
     this._selfTestCounter = 0;
+  }
+
+  /** Attach or clear a real card transport (Wi-Fi / BLE). */
+  bindTransport(transport = null, mapPacket = null) {
+    if (this.connected) throw new Error('Disconnect before changing the card transport.');
+    this._cardTransport = transport;
+    this._mapPacket = typeof mapPacket === 'function' ? mapPacket : null;
+    this._cardIdentity = null;
+    return this;
+  }
+
+  _usingLiveCard() {
+    return this._liveMode && this._cardTransport && typeof this._cardTransport.sample === 'function';
   }
 
   /**
@@ -54,25 +75,84 @@ export class JokerAdapter {
 
   async connect(profile = {}) {
     if (profile && Object.keys(profile).length) this.connectionProfile = { ...this.connectionProfile, ...profile };
-    const check = this.validateConnectionProfile();
-    if (!check.valid) throw new Error(check.reason);
+    const mode = String(this.connectionProfile.mode || profile.mode || 'auto').toLowerCase();
     this.devicePoweredOff = false;
+
+    if (mode === 'demo' || mode === 'simulation' || mode === 'simulated' || !this._cardTransport) {
+      const check = this.validateConnectionProfile();
+      if (!check.valid && mode !== 'demo') throw new Error(check.reason);
+      this._liveMode = false;
+      this._cardIdentity = null;
+      this.connected = true;
+      this.transport = 'Simulated';
+      this.connectionProfile = { ...this.connectionProfile, transport: 'Simulated', mode: 'demo' };
+      return { success: true, status: 'CONNECTED', transport: this.transport };
+    }
+
+    if (typeof this._mapPacket !== 'function') {
+      throw new Error('Card transport is bound without mapPacket; cannot feed the UI.');
+    }
+
+    if (this._unsubDisconnect) {
+      this._unsubDisconnect();
+      this._unsubDisconnect = null;
+    }
+
+    const identity = await this._cardTransport.connect();
+    this._cardIdentity = identity;
+    this._liveMode = true;
     this.connected = true;
-    this.transport = this.connectionProfile.transport || 'Simulated';
-    return { success: true, status: 'CONNECTED', transport: this.transport };
+    this.transport = this._cardTransport.name || identity?.deviceName || 'Card';
+    this.connectionProfile = {
+      ...this.connectionProfile,
+      transport: this.transport,
+      mode: mode === 'auto' ? 'card' : mode
+    };
+
+    if (typeof this._cardTransport.onDisconnect === 'function') {
+      this._unsubDisconnect = this._cardTransport.onDisconnect(() => {
+        this.connected = false;
+        this._liveMode = false;
+      });
+    }
+
+    return {
+      success: true,
+      status: 'CONNECTED',
+      transport: this.transport,
+      deviceId: identity?.deviceId,
+      deviceName: identity?.deviceName
+    };
   }
 
   async disconnect() {
+    if (this._unsubDisconnect) {
+      this._unsubDisconnect();
+      this._unsubDisconnect = null;
+    }
+    if (this._cardTransport && typeof this._cardTransport.disconnect === 'function') {
+      try { await this._cardTransport.disconnect(); } catch { /* best effort */ }
+    }
     this.connected = false;
+    this._liveMode = false;
+    this._cardIdentity = null;
     this.stopNfcReaderSession();
     return { success: true, status: 'DISCONNECTED' };
   }
 
   async sample() {
     if (!this.connected) return null;
+
+    if (this._usingLiveCard()) {
+      const packet = await this._cardTransport.sample();
+      if (!packet) return null;
+      return this._mapPacket(packet);
+    }
+
     const grid = this.generateThermalGrid();
     const centerValue = grid[Math.floor(grid.length / 2)];
     return {
+      source: 'simulated',
       thermal: Number(centerValue.toFixed(2)),
       wifi: { accessPoints: Math.floor(Math.random() * 10) + 1 },
       ble: { devices: this._bleDiscovered.size || Math.floor(Math.random() * 5) },
@@ -85,6 +165,7 @@ export class JokerAdapter {
   }
 
   getThermalGrid() {
+    if (this._usingLiveCard()) return [];
     return this.generateThermalGrid();
   }
 
@@ -248,6 +329,22 @@ export class JokerAdapter {
    * radar-scanner fields (angle in radians, rssi, kind, safety) and a display `type`.
    */
   getRadarScanData() {
+    // Status API is not an RF capture feed; do not invent nearby devices while live.
+    if (this._usingLiveCard()) {
+      const clients = Number(this._lastCardClients);
+      return {
+        angle: 0,
+        devices: Number.isFinite(clients) && clients > 0
+          ? Array.from({ length: Math.min(clients, 8) }, (_, i) => ({
+            angle: (i / Math.max(clients, 1)) * Math.PI * 2,
+            rssi: null,
+            kind: 'CLIENT',
+            type: 'AP client',
+            safety: 'KNOWN'
+          }))
+          : []
+      };
+    }
     const bleCount = this._bleDiscovered.size || Math.floor(Math.random() * 4) + 1;
     const wifiCount = Math.floor(Math.random() * 6) + 2;
     const devices = [];
@@ -258,6 +355,11 @@ export class JokerAdapter {
       devices.push({ angle: Math.random() * Math.PI * 2, rssi: -30 - Math.random() * 60, kind: 'WIFI', type: 'Wi-Fi', safety: 'UNKNOWN' });
     }
     return { angle: Math.floor(Math.random() * 360), devices };
+  }
+
+  /** Remember last live client count for the local radar view (no RF inventing). */
+  noteCardClients(clients) {
+    this._lastCardClients = clients;
   }
 
   setRgbMode(mode) {
@@ -285,7 +387,16 @@ export class JokerAdapter {
    */
   killDevice() {
     this.stopNfcReaderSession();
+    if (this._unsubDisconnect) {
+      this._unsubDisconnect();
+      this._unsubDisconnect = null;
+    }
+    if (this._cardTransport && typeof this._cardTransport.disconnect === 'function') {
+      try { this._cardTransport.disconnect(); } catch { /* best effort */ }
+    }
     this.connected = false;
+    this._liveMode = false;
+    this._cardIdentity = null;
     this.devicePoweredOff = true;
     this.activeProfile = 'isolated';
     return { success: true, status: 'TERMINATED' };

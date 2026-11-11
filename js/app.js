@@ -17,6 +17,9 @@ import {
   createMonitoringPipeline,
   createWllamaCompleter,
 } from './async-pipeline.js';
+import { createTransportFromDescriptor } from './transports/index.js';
+import { mapCardPacketToConsoleSample } from './transports/card-mapping.js';
+import { connectionHint, resolveLinkChoice } from './transports/resolve-link.js';
 
 const POLL_INTERVAL_MS = 15000;
 const CONFIRMATION_TIMEOUT_MS = 60000;
@@ -137,16 +140,51 @@ export class AppController {
   publishTelemetry(sample = {}, features = {}) {
     if (!sample || typeof sample !== 'object') return;
     this.latestTelemetry = sample;
-    const thermalValue = Number(sample?.thermal ?? sample?.temperatureC ?? 0);
-    this.setText('temp-val', Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : '--');
-    this.setText('wifi-val', sample?.wifi?.accessPoints ?? '--');
-    this.setText('ble-val', sample?.ble?.devices ?? '--');
-    this.setText('nfc-val', sample?.nfc?.eventsLast5Min ?? '--');
-    this.updateTelemetryBadge(thermalValue);
+    const fromCard = sample?.source === 'card';
+    const thermalValue = Number(sample?.thermal ?? sample?.temperatureC);
+    const heapKb = Number(sample?.heapKb);
 
-    const thermalGrid = document.getElementById('thermal-grid');
-    if (thermalGrid) {
-      thermalGrid.textContent = `thermal: ${Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : '--'}°C`;
+    if (fromCard) {
+      this.adapter?.noteCardClients?.(sample?.clients);
+      this.setText('temp-val', Number.isFinite(heapKb) ? heapKb.toFixed(1) : '--');
+      this.setText('wifi-val', sample?.clients ?? sample?.wifi?.accessPoints ?? '--');
+      this.setText('ble-val', sample?.channel ?? '--');
+      this.setText('nfc-val', sample?.nfc?.present ? `reader ${sample?.nfc?.firmware ?? 'ok'}` : (sample?.nfc?.eventsLast5Min ?? '--'));
+      this.updateTelemetryBadge(Number.isFinite(heapKb) ? (heapKb < 40 ? 40 : 20) : 20);
+      const thermalGrid = document.getElementById('thermal-grid');
+      if (thermalGrid) {
+        const uptime = Number.isFinite(sample?.uptimeSeconds) ? `${sample.uptimeSeconds}s` : '--';
+        const batt = Number.isFinite(sample?.batteryPct) ? `${sample.batteryPct}%` : 'n/a';
+        thermalGrid.textContent = `heap ${Number.isFinite(heapKb) ? heapKb.toFixed(1) : '--'} KB · min ${Number.isFinite(sample?.minHeapKb) ? sample.minHeapKb.toFixed(1) : '--'} · up ${uptime} · batt ${batt}`;
+      }
+      this.setText('battery-status', Number.isFinite(sample?.batteryPct) ? `BATT: ${sample.batteryPct}%` : 'BATT: n/a');
+      const tempLabel = document.getElementById('primary-metric-label');
+      if (tempLabel) tempLabel.textContent = 'Heap:';
+      const tempUnit = document.getElementById('primary-metric-unit');
+      if (tempUnit) tempUnit.textContent = 'KB';
+      const wifiLabel = document.getElementById('wifi-metric-label');
+      if (wifiLabel) wifiLabel.textContent = 'AP clients:';
+      const bleLabel = document.getElementById('ble-metric-label');
+      if (bleLabel) bleLabel.textContent = 'Channel:';
+    } else {
+      this.setText('temp-val', Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : '--');
+      this.setText('wifi-val', sample?.wifi?.accessPoints ?? '--');
+      this.setText('ble-val', sample?.ble?.devices ?? '--');
+      this.setText('nfc-val', sample?.nfc?.eventsLast5Min ?? '--');
+      this.updateTelemetryBadge(Number.isFinite(thermalValue) ? thermalValue : 0);
+      const thermalGrid = document.getElementById('thermal-grid');
+      if (thermalGrid) {
+        thermalGrid.textContent = `thermal: ${Number.isFinite(thermalValue) ? thermalValue.toFixed(1) : '--'}°C`;
+      }
+      this.setText('battery-status', 'BATT: LOCAL');
+      const tempLabel = document.getElementById('primary-metric-label');
+      if (tempLabel) tempLabel.textContent = 'Temp:';
+      const tempUnit = document.getElementById('primary-metric-unit');
+      if (tempUnit) tempUnit.textContent = '°C';
+      const wifiLabel = document.getElementById('wifi-metric-label');
+      if (wifiLabel) wifiLabel.textContent = 'Wi-Fi APs:';
+      const bleLabel = document.getElementById('ble-metric-label');
+      if (bleLabel) bleLabel.textContent = 'BLE Devices:';
     }
 
     const radarList = document.getElementById('radar-target-list');
@@ -154,7 +192,7 @@ export class AppController {
     if (radarList) {
       const deviceText = Array.isArray(radar.devices) && radar.devices.length
         ? radar.devices.map((device) => `${device?.type ?? 'device'}:${device?.rssi ?? '--'}dBm`).join(' | ')
-        : 'no targets';
+        : (fromCard ? 'status feed only (no RF capture)' : 'no targets');
       radarList.textContent = deviceText;
     }
 
@@ -240,11 +278,38 @@ export class AppController {
 
   async init() {
     this.bindEvents();
+    this.bindViewTabs();
     this.updateStatus('DISCONNECTED');
     this.setAuditLocked(true, 'Locked: authorization required.');
     this.monitoringPipeline = this.createMonitoringPipeline();
+    this.refreshConnectionHint();
     window.addEventListener('pagehide', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
     window.addEventListener('beforeunload', () => { this.clearAuditSession(); this.localLLM.unloadSession(); });
+  }
+
+  bindViewTabs() {
+    const tabs = document.querySelectorAll('[data-view-tab]');
+    const viewport = document.getElementById('aegis-viewport');
+    if (!tabs.length || !viewport) return;
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const view = tab.getAttribute('data-view-tab') || 'ops';
+        viewport.setAttribute('data-active-view', view);
+        tabs.forEach((node) => {
+          const selected = node === tab;
+          node.setAttribute('aria-selected', String(selected));
+          node.classList.toggle('is-active', selected);
+        });
+      });
+    });
+    viewport.setAttribute('data-active-view', 'ops');
+  }
+
+  refreshConnectionHint() {
+    const hint = document.getElementById('connection-hint');
+    if (hint) hint.textContent = connectionHint();
+    const link = resolveLinkChoice(document.getElementById('transport-mode')?.value || 'auto');
+    this.setText('signal-status', `LINK: ${link.kind.toUpperCase()}`);
   }
 
   bindEvents() {
@@ -255,6 +320,7 @@ export class AppController {
     this.bind('lockdown-btn', 'click', () => this.handleLockdown());
     this.bind('command-export-btn', 'click', () => this.exportComplianceReport());
     this.bind('theme-select', 'change', (event) => this.handleThemeChange(event.target.value));
+    this.bind('transport-mode', 'change', () => this.refreshConnectionHint());
     this.bind('vault-unlock-btn', 'click', () => this.handleVaultUnlock());
     this.bind('verify-authorization-btn', 'click', () => this.verifyAuthorization());
     this.bind('classify-nfc-btn', 'click', () => this.classifyNfc());
@@ -281,6 +347,7 @@ export class AppController {
   }
 
   async handleConnect() {
+    const connectBtn = document.getElementById('connect-btn');
     try {
       if (this.adapter.connected) {
         this.stopPolling();
@@ -288,15 +355,48 @@ export class AppController {
         this.clearAuditSession();
         this.localLLM.unloadSession();
         this.updateStatus('DISCONNECTED');
-      } else {
-        this.updateStatus('CONNECTING');
-        await this.adapter.connect();
-        this.updateStatus('CONNECTED');
-        this.startPolling();
+        if (connectBtn) connectBtn.textContent = 'Connect';
+        this.setText('signal-status', 'LINK: --');
+        this.refreshConnectionHint();
+        return;
       }
+
+      const mode = document.getElementById('transport-mode')?.value || 'auto';
+      const choice = resolveLinkChoice(mode);
+      this.setText('connection-hint', choice.reason);
+      this.updateStatus('CONNECTING');
+      if (connectBtn) connectBtn.textContent = 'Connecting…';
+
+      if (choice.kind === 'demo') {
+        this.adapter.bindTransport(null, null);
+        await this.adapter.connect({ mode: 'demo', transport: 'Simulated' });
+        this.updateStatus('CONNECTED (DEMO)');
+        this.appendAlertStream('Demo bus connected. UI is using simulated telemetry.', 'info');
+      } else {
+        if (!choice.descriptor) {
+          throw new Error(choice.reason || 'No card link is configured for this mode.');
+        }
+        const transport = createTransportFromDescriptor(choice.descriptor);
+        if (!transport) throw new Error('Card transport could not be created from the protocol descriptor.');
+        this.adapter.bindTransport(transport, mapCardPacketToConsoleSample);
+        const result = await this.adapter.connect({ mode: choice.kind });
+        this.updateStatus('CONNECTED');
+        this.setText('signal-status', `LINK: ${this.adapter.transport}`);
+        if (result?.deviceName) {
+          this.appendAlertStream(`Card link open: ${result.deviceName} via ${this.adapter.transport}.`, 'info');
+        } else {
+          this.appendAlertStream(`Card link open via ${this.adapter.transport}. Polling status for UI.`, 'info');
+        }
+      }
+
+      if (connectBtn) connectBtn.textContent = 'Disconnect';
+      this.startPolling();
     } catch (error) {
       this.updateStatus('CONNECTION FAILED');
+      if (connectBtn) connectBtn.textContent = 'Connect';
+      try { await this.adapter.disconnect(); } catch { /* best effort */ }
       this.appendAlertStream(`Connection error: ${error?.message ?? error}`, 'critical');
+      this.setText('connection-hint', String(error?.message ?? error));
     }
   }
 
@@ -628,17 +728,7 @@ export class AppController {
   }
 
   renderTelemetry(data) {
-    const apply = () => {
-      this.setText('temp-val', data.thermal.toFixed(1));
-      this.setText('wifi-val', data.wifi.accessPoints);
-      this.setText('ble-val', data.ble.devices);
-      this.setText('nfc-val', data.nfc.eventsLast5Min);
-      this.updateTelemetryBadge(data.thermal);
-      this.latestTelemetry = data;
-      const radarCanvas = document.getElementById('radar-display');
-      if (radarCanvas) this.radarScanner.render(radarCanvas, this.adapter.getRadarScanData().devices);
-      this.renderFleetStatus();
-    };
+    const apply = () => this.publishTelemetry(data);
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
     else apply();
   }

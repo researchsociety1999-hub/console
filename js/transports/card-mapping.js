@@ -49,3 +49,41 @@ export const CARD_MAPPING = {
 
   // No createCommandBridge: no card command has been documented or captured, so none is configured.
 };
+
+/**
+ * Maps a validated card status packet into the Console / AEGIS telemetry shape.
+ * Only uses fields the card actually sends. Thermal and BLE device counts stay unset
+ * because /api/status does not provide them.
+ */
+export function mapCardPacketToConsoleSample(packet) {
+  if (!packet || typeof packet !== 'object') return null;
+  const mapped = CARD_MAPPING.mapPacket(packet);
+  if (!mapped || typeof mapped.heapKb !== 'number') return null;
+
+  return {
+    source: 'card',
+    thermal: null,
+    temperatureC: null,
+    heapKb: mapped.heapKb,
+    minHeapKb: mapped.minHeapKb,
+    clients: mapped.clients,
+    channel: mapped.channel,
+    uptimeSeconds: mapped.uptimeSeconds,
+    batteryPct: mapped.batteryPct,
+    wifi: {
+      accessPoints: Number.isFinite(mapped.clients) ? mapped.clients : 0,
+      channel: mapped.channel
+    },
+    ble: { devices: 0 },
+    nfc: {
+      eventsLast5Min: mapped.nfcReaderPresent ? 1 : 0,
+      present: mapped.nfcReaderPresent,
+      firmware: mapped.nfcFirmware
+    },
+    modules: [
+      { id: 'nfc', status: mapped.nfcReaderPresent ? 'OK' : 'ABSENT' },
+      { id: 'wifi', status: 'OK' }
+    ],
+    provenance: packet.provenance ?? null
+  };
+}
