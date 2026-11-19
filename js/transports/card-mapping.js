@@ -6,16 +6,31 @@
  *  - name, mac, apSSID: they identify the owner's device or network, so they are not kept or shown.
  *  - rssi: it is 0 on this card (the card is the access point), so it carries no information.
  *  - batPct / vbat: the card reports -1 when the battery is not measured. Battery is mapped only when it is 0 or more.
- *  - There is no `nfc` or `ble` field in the sample on purpose: Sentinel treats a truthy `nfc` as "a tag was just read"
- *    and `ble` as a nearby device, and the status response contains neither event.
+ *  - There is no nfc or ble field in the sample on purpose: Sentinel treats a truthy nfc as a tag just read
+ *    and ble as a nearby device, and the status response contains neither event.
+ * lastCommand is mapped only when the card reports one (docs/CARD_COMMAND_CONTRACT.md).
  */
 
 const UPTIME = /^(\d+):([0-5]\d):([0-5]\d)$/;
 
-/** Converts the card's "HH:MM:SS" uptime text into seconds, or undefined if it is not in that form. */
+/** Converts the card's HH:MM:SS uptime text into seconds, or undefined if it is not in that form. */
 export function parseUptime(text) {
   const match = UPTIME.exec(String(text));
   return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : undefined;
+}
+
+function lastCommandFrom(packet) {
+  if (typeof packet.cmdId !== 'string' || typeof packet.cmdState !== 'string') return {};
+  return {
+    lastCommand: {
+      id: packet.cmdId,
+      state: packet.cmdState,
+      ...(typeof packet.cmdRgb === 'string' ? { rgb: packet.cmdRgb } : {}),
+      ...(typeof packet.cmdSound === 'string' ? { sound: packet.cmdSound } : {}),
+      ...(Number.isFinite(packet.cmdAppliedAtMs) ? { appliedAtMs: packet.cmdAppliedAtMs } : {}),
+      ...(typeof packet.cmdReason === 'string' ? { reason: packet.cmdReason } : {})
+    }
+  };
 }
 
 export const CARD_MAPPING = {
@@ -29,7 +44,8 @@ export const CARD_MAPPING = {
       ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {}),
       ...(Number.isFinite(packet.batPct) && packet.batPct >= 0 ? { batteryPct: packet.batPct } : {}),
       ...(typeof packet.nfcPresent === 'boolean' ? { nfcReaderPresent: packet.nfcPresent } : {}),
-      ...(typeof packet.nfcFw === 'string' ? { nfcFirmware: packet.nfcFw } : {})
+      ...(typeof packet.nfcFw === 'string' ? { nfcFirmware: packet.nfcFw } : {}),
+      ...lastCommandFrom(packet)
     };
   },
 
@@ -47,7 +63,8 @@ export const CARD_MAPPING = {
   // An alert is marked resolved after this many consecutive quiet monitoring cycles (15 s each).
   resolveAfterCycles: 3
 
-  // No createCommandBridge: no card command has been documented or captured, so none is configured.
+  // No createCommandBridge: none of ActionService's actions (MONITOR, RESTART_MODULE, ...) maps to a card command.
+  // Card commands go through js/transports/card-commands.js sendSetState and the Sentinel CommandService.
 };
 
 /**
@@ -84,6 +101,7 @@ export function mapCardPacketToConsoleSample(packet) {
       { id: 'nfc', status: mapped.nfcReaderPresent ? 'OK' : 'ABSENT' },
       { id: 'wifi', status: 'OK' }
     ],
+    lastCommand: mapped.lastCommand ?? null,
     provenance: packet.provenance ?? null
   };
 }
