@@ -6,8 +6,14 @@
  * audit/telemetry API that js/app.js depends on.
  *
  * Optional real card transport: pass { transport, mapPacket } or call bindTransport().
- * Without a transport, connect() stays on the local simulation bus (tests / demo mode).
+ * Without a transport (or in demo mode), connect() stays on the local simulation bus (tests / demo mode).
+ * With a LIVE card bound, every simulated path fails closed: it returns null or an empty result, or throws,
+ * instead of generating data or a fake success. Card commands go through sendStateCommand -> sendSetState
+ * (docs/CARD_COMMAND_CONTRACT.md).
  */
+
+import { isHeaderGpioPin } from './command-rules.js';
+import { createRequestId, sendSetState } from './transports/card-commands.js';
 
 export class JokerAdapter {
   constructor({ transport = null, mapPacket = null } = {}) {
@@ -51,6 +57,10 @@ export class JokerAdapter {
 
   _usingLiveCard() {
     return this._liveMode && this._cardTransport && typeof this._cardTransport.sample === 'function';
+  }
+
+  _unavailableLive(what) {
+    throw new Error(`${what} is not available from the live card: no verified card command or telemetry field exists for it.`);
   }
 
   /**
@@ -208,8 +218,9 @@ export class JokerAdapter {
     return baseline;
   }
 
+  /** Thermal grid and GPIO states. Demo mode only: the live card reports neither, so this returns null. */
   async getSafeAuditTelemetry() {
-    if (!this.connected) return null;
+    if (!this.connected || this._usingLiveCard()) return null;
     const grid = this.generateThermalGrid();
     return {
       thermalGrid: grid,
@@ -224,6 +235,7 @@ export class JokerAdapter {
   }
 
   toggleGpioLine(lineName) {
+    if (this._usingLiveCard()) this._unavailableLive('GPIO line toggling');
     const line = this._gpioLines[lineName];
     if (!line) throw new Error(`Unknown GPIO line: ${lineName}`);
     line.active = !line.active;
@@ -252,8 +264,13 @@ export class JokerAdapter {
     return this.serializeSafeAuditEvent(parsed.type, parsed.data || {});
   }
 
+  /** Live card: the pin must be one of the 14 header pins, and no GPIO command exists in the protocol yet, so it is refused. */
   setGpioPin(pin, value) {
     if (!this.connected) throw new Error('Connect local hardware before setting GPIO state.');
+    if (this._usingLiveCard()) {
+      if (!isHeaderGpioPin(Number(pin))) throw new Error(`Pin ${pin} is not a header pin.`);
+      throw new Error('No GPIO command is defined in the card protocol, so a live GPIO write is refused.');
+    }
     const pinId = String(pin);
     const normalizedValue = value === true || value === 'HIGH' || value === 1 ? 'HIGH' : 'LOW';
     this.gpioState[pinId] = normalizedValue;
@@ -262,6 +279,7 @@ export class JokerAdapter {
 
   setModuleState(moduleId, state) {
     if (!this.connected) throw new Error('Connect local hardware before toggling a module.');
+    if (this._usingLiveCard()) this._unavailableLive('Module switching');
     const id = String(moduleId || 'unknown');
     const normalizedState = state === true || state === 'ON' ? 'ON' : 'OFF';
     this.moduleStates[id] = normalizedState;
@@ -272,6 +290,7 @@ export class JokerAdapter {
 
   async triggerModuleSelfTest(moduleId) {
     if (!this.connected) throw new Error('Connect local hardware before running a self-test.');
+    if (this._usingLiveCard()) this._unavailableLive('Module self-test');
     this._selfTestCounter += 1;
     await new Promise((resolve) => setTimeout(resolve, 0));
     const latencyMs = 8 + Math.round(Math.random() * 40);
@@ -295,7 +314,8 @@ export class JokerAdapter {
     }
   }
 
-  _simulateBleCount() { return Math.floor(Math.random() * 5); }
+  /** Demo mode only. With a live card there is no simulated count: the result is null. */
+  _simulateBleCount() { return this._usingLiveCard() ? null : Math.floor(Math.random() * 5); }
 
   async startNfcReaderSession(onReading) {
     if (typeof NDEFReader === 'undefined') return { supported: false };
@@ -321,30 +341,15 @@ export class JokerAdapter {
   _countRecentNfcEvents(windowMs = 5 * 60 * 1000) {
     const now = Date.now();
     this._nfcEventTimestamps = this._nfcEventTimestamps.filter((t) => now - t <= windowMs);
-    return this._nfcEventTimestamps.length || Math.floor(Math.random() * 3);
+    return this._nfcEventTimestamps.length || (this._usingLiveCard() ? 0 : Math.floor(Math.random() * 3));
   }
 
   /**
-   * Returns the current radar sweep: { angle, devices }. Each device carries both the
-   * radar-scanner fields (angle in radians, rssi, kind, safety) and a display `type`.
+   * Returns the current radar sweep: { angle, devices }. Demo mode only generates targets.
+   * With a live card the status feed is not an RF capture, so there are never any targets.
    */
   getRadarScanData() {
-    // Status API is not an RF capture feed; do not invent nearby devices while live.
-    if (this._usingLiveCard()) {
-      const clients = Number(this._lastCardClients);
-      return {
-        angle: 0,
-        devices: Number.isFinite(clients) && clients > 0
-          ? Array.from({ length: Math.min(clients, 8) }, (_, i) => ({
-            angle: (i / Math.max(clients, 1)) * Math.PI * 2,
-            rssi: null,
-            kind: 'CLIENT',
-            type: 'AP client',
-            safety: 'KNOWN'
-          }))
-          : []
-      };
-    }
+    if (this._usingLiveCard()) return { angle: 0, devices: [] };
     const bleCount = this._bleDiscovered.size || Math.floor(Math.random() * 4) + 1;
     const wifiCount = Math.floor(Math.random() * 6) + 2;
     const devices = [];
@@ -357,19 +362,38 @@ export class JokerAdapter {
     return { angle: Math.floor(Math.random() * 360), devices };
   }
 
-  /** Remember last live client count for the local radar view (no RF inventing). */
+  /** Remember last live client count (kept for the AEGIS status text; it is not shown as radar targets). */
   noteCardClients(clients) {
     this._lastCardClients = clients;
   }
 
+  /** Live card: sends SET_STATE and resolves with the card acknowledgement (a Promise). Demo mode: local simulation. */
   setRgbMode(mode) {
     if (!this.connected) throw new Error('Connect local hardware before setting RGB mode.');
-    return this.stealthMode ? { status: 'suppressed_by_stealth_mode' } : { action: 'RGB_MODE', mode, status: 'SET_LOCALLY' };
+    if (this.stealthMode) return { status: 'suppressed_by_stealth_mode' };
+    if (this._usingLiveCard()) return this.sendStateCommand({ id: createRequestId(), cmd: 'SET_STATE', rgb: mode });
+    return { action: 'RGB_MODE', mode, status: 'SET_LOCALLY' };
   }
 
   async sendBuzzerTone(frequency = 880, duration = 160) {
     if (!this.connected) throw new Error('Connect local hardware before triggering the buzzer.');
-    return this.stealthMode ? { status: 'suppressed_by_stealth_mode' } : { action: 'BUZZER_TONE', frequency, duration, status: 'ok' };
+    if (this.stealthMode) return { status: 'suppressed_by_stealth_mode' };
+    if (this._usingLiveCard()) this._unavailableLive('Free-form buzzer tones (use playSound with a named sound)');
+    return { action: 'BUZZER_TONE', frequency, duration, status: 'ok' };
+  }
+
+  /** Named sound (none, boot, ok, alarm, coin, laugh). Live card: SET_STATE. Demo mode: marked SIMULATED. */
+  async playSound(name) {
+    if (!this.connected) throw new Error('Connect local hardware before playing a sound.');
+    if (this.stealthMode) return { status: 'suppressed_by_stealth_mode' };
+    if (this._usingLiveCard()) return this.sendStateCommand({ id: createRequestId(), cmd: 'SET_STATE', sound: name });
+    return { action: 'SOUND', sound: name, status: 'SIMULATED' };
+  }
+
+  /** Sends a SET_STATE request to the live card (validated, up to 3 attempts, same id). Rejects unless a live card is connected. */
+  async sendStateCommand(request) {
+    if (!this._usingLiveCard()) throw new Error('State commands need a connected live card.');
+    return sendSetState(this._cardTransport, request);
   }
 
   async setStealthMode(enabled) {
@@ -378,14 +402,17 @@ export class JokerAdapter {
   }
 
   async restartModule(moduleId) {
+    if (this._usingLiveCard()) this._unavailableLive('Module restart');
     return { action: 'MODULE_RESTART', moduleId: String(moduleId || 'unknown'), recovered: true, status: 'RESTARTED' };
   }
 
   /**
-   * Isolates the simulated device and clears its connected state.
+   * Demo mode: isolates the simulated device and clears its connected state.
+   * Live card: only disconnects this browser from the card (the card itself is not powered off or isolated).
    * Callers are expected to obtain human confirmation first (see AppController).
    */
   killDevice() {
+    const live = this._usingLiveCard();
     this.stopNfcReaderSession();
     if (this._unsubDisconnect) {
       this._unsubDisconnect();
@@ -399,7 +426,7 @@ export class JokerAdapter {
     this._cardIdentity = null;
     this.devicePoweredOff = true;
     this.activeProfile = 'isolated';
-    return { success: true, status: 'TERMINATED' };
+    return { success: true, status: live ? 'DISCONNECTED_LOCALLY' : 'TERMINATED' };
   }
 
   isDevicePoweredOff() { return this.devicePoweredOff; }
