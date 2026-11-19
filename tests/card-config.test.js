@@ -49,7 +49,8 @@ describe('card identity and parsing (real captured response)', () => {
     expect(CARD_PROTOCOL.baseUrl).toBe('http://192.168.4.1');
     expect(CARD_PROTOCOL.telemetry.path).toBe('/api/status');
     expect(JSON.stringify(Object.keys(CARD_PROTOCOL))).not.toMatch(/radar/);
-    expect(CARD_PROTOCOL.allowCommands).toBeUndefined();
+    expect(CARD_PROTOCOL.allowCommands).toBe(true);
+    expect(Object.keys(CARD_PROTOCOL.commands)).toEqual(['SET_STATE']);
   });
 });
 
