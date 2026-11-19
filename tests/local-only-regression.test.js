@@ -4,6 +4,9 @@ import {
   validateModulePacket
 } from '../js/data-firewall.js';
 import { JokerAdapter } from '../js/joker-adapter.js';
+import { CardWifiTransport } from '../js/transports/card-wifi-transport.js';
+import { CARD_PROTOCOL } from '../js/transports/card-protocol.js';
+import { sendSetState } from '../js/transports/card-commands.js';
 
 function installBrowserMocks() {
   if (typeof globalThis.ImageData === 'undefined') {
@@ -135,5 +138,59 @@ describe('Local-Only Architecture & Regression Guard', () => {
     expect(result.status).toBe('TERMINATED');
     expect(adapter.activeProfile).toBe('isolated');
     expect(adapter.connected).toBe(false);
+  });
+});
+
+const BOARD = 'SGP Card Joker / ESP32-S3-MINI-1-N8';
+const REQUEST = { id: 'c-0007', cmd: 'SET_STATE', rgb: 'joker', color: [0, 255, 0], sound: 'laugh' };
+const reply = (body, status = 200) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
+
+async function connectedTransport(onCommand) {
+  const posts = [];
+  const fetchImpl = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/api/status') return reply({ board: BOARD, mac: 'removed' });
+    if (path === '/api/command') {
+      posts.push(init);
+      return onCommand(JSON.parse(init.body), init);
+    }
+    return reply({}, 404);
+  };
+  const transport = new CardWifiTransport({ descriptor: CARD_PROTOCOL, fetchImpl, pageProtocol: 'http:' });
+  await transport.connect();
+  return { transport, posts };
+}
+
+describe('SET_STATE command contract (fake network)', () => {
+  it('reports success only for a matching id in state applied', async () => {
+    const { transport, posts } = await connectedTransport((request) => reply({ lastCommand: { id: request.id, state: 'applied', rgb: 'joker', sound: 'played', appliedAtMs: 91234 } }));
+    const ack = await sendSetState(transport, REQUEST);
+    expect(ack).toMatchObject({ acknowledged: true, state: 'applied', id: 'c-0007', rgb: 'joker', sound: 'played', appliedAtMs: 91234, attempts: 1 });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].method).toBe('POST');
+    expect(JSON.parse(posts[0].body)).toEqual(REQUEST);
+    expect(posts[0].headers['Content-Type']).toContain('text/plain');
+  });
+
+  it('rejects with the card reason when the card reports an error, without retrying', async () => {
+    const { transport, posts } = await connectedTransport((request) => reply({ lastCommand: { id: request.id, state: 'error', reason: 'LED_BUSY' } }));
+    await expect(sendSetState(transport, REQUEST)).rejects.toMatchObject({ code: 'CARD_ERROR', reason: 'LED_BUSY', state: 'error' });
+    expect(posts).toHaveLength(1);
+  });
+
+  it('gives up with COMMAND_TIMEOUT when the card does not answer within 5 seconds', async () => {
+    const { transport } = await connectedTransport((_request, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    vi.useFakeTimers();
+    try {
+      const pending = sendSetState(transport, REQUEST, { attempts: 1 }).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(5000);
+      const error = await pending;
+      expect(error).toMatchObject({ code: 'COMMAND_TIMEOUT', attempts: 1 });
+      expect(error.message).toContain('timed out');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
