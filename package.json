@@ -15,6 +15,6 @@
     "vitest": "^5.1.0"
   },
   "dependencies": {
-    "@wllama/wllama": "^3.13.0"
+    "@wllama/wllama": "^4.0.0"
   }
 }
